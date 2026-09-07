@@ -101,17 +101,50 @@ def load_message(path):
     return email.message_from_bytes(b, policy=policy.default)
 
 
-def list_date_from(subject, msg_date):
-    m = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})", subject or "")
-    if m:
-        y = int(m.group(3)); y = y + 2000 if y < 100 else y
-        try: return dt.date(y, int(m.group(2)), int(m.group(1))).isoformat()
-        except ValueError: pass
+def _date_in(s):
+    m = re.search(r"(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})", s or "")
+    if not m:
+        return None
+    y = int(m.group(3)); y = y + 2000 if y < 100 else y
+    try:
+        return dt.date(y, int(m.group(2)), int(m.group(1))).isoformat()
+    except ValueError:
+        return None
+
+
+def _received_date(msg_date):
+    """Beirut calendar date the mail arrived. Uses the real zone: Lebanon is +3
+    only in summer, so a hardcoded +3 mis-dates every list from late October."""
     try:
         d = email.utils.parsedate_to_datetime(msg_date)
-        return (d + dt.timedelta(hours=3)).date().isoformat()  # Beirut summer offset
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+        try:
+            from zoneinfo import ZoneInfo
+            return d.astimezone(ZoneInfo("Asia/Beirut")).date().isoformat()
+        except Exception:
+            return (d.astimezone(dt.timezone.utc) + dt.timedelta(hours=3)).date().isoformat()
     except Exception:
         return None
+
+
+def list_date_from(subject, msg_date, filenames=()):
+    """The date of the list itself.
+
+    Priority: attachment filename, then subject, then arrival date. Pharmacy
+    often replies into an old thread, so the subject can carry a stale date
+    ("Re: AS List 05.09.2026" on the 06.09 list). A subject date is therefore
+    trusted only when it agrees with the Beirut date the mail arrived.
+    """
+    for fn in filenames:
+        d = _date_in(fn)
+        if d:
+            return d
+    recv = _received_date(msg_date)
+    subj = _date_in(subject)
+    if subj and (recv is None or subj == recv):
+        return subj
+    return recv or subj
 
 
 def build_patients(rows):
@@ -149,11 +182,12 @@ def build_patients(rows):
 def main(inp, outp):
     msg = load_message(inp)
     subject = msg.get("subject", ""); sender = msg.get("from", ""); date = msg.get("date", "")
-    tried = []; best = ([], "none")
+    tried = []; best = ([], "none"); fnames = []
     for part in msg.walk():
         ct = part.get_content_type(); fn = part.get_filename() or ""
         payload = part.get_payload(decode=True)
         if payload is None: continue
+        if fn.lower().endswith((".xlsx", ".xlsm", ".xls", ".csv")): fnames.append(fn)
         rows = []
         try:
             if fn.lower().endswith((".xlsx", ".xlsm")) or "spreadsheetml" in ct:
@@ -175,7 +209,8 @@ def main(inp, outp):
             best = (rows, tried[-1] if tried else ct)
     rows, src = best
     patients = build_patients(rows)
-    out = {"subject": subject, "from": sender, "date": date, "list_date": list_date_from(subject, date),
+    out = {"subject": subject, "from": sender, "date": date,
+           "list_date": list_date_from(subject, date, fnames),
            "source_used": src, "sources_tried": tried, "n_rows": len(rows), "patients": patients}
     jdump(out, outp)
     print("AS list %s: %d order rows, %d patients (%d standing, %d once-only), source=%s" % (

@@ -75,6 +75,20 @@ def norm(t):
     return "\n".join(l.rstrip() for l in t.replace("\r\n", "\n").split("\n")).strip() + "\n"
 
 
+def norm_part(t):
+    """Undo mail-transport damage on ONE state part without touching indentation.
+
+    pack() splits on line boundaries, so the leading whitespace of a part's first
+    line is real payload (the state is JSON at indent=1). norm() calls .strip(),
+    which eats that indentation and also appends a newline per part, so joining
+    norm()ed parts can never reproduce the packed text and the sha256 check fails
+    every time. Only CRLF and trailing whitespace are transport artefacts.
+    """
+    t = t.replace("\r\n", "\n")
+    t = "\n".join(l.rstrip() for l in t.split("\n"))
+    return t[:-1] if t.endswith("\n") else t
+
+
 def raw_to_msg(obj):
     raw = obj["raw"]; b = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4))
     return email.message_from_bytes(b, policy=policy.default)
@@ -120,8 +134,7 @@ def unpack(inputs, out_p):
     have = parts[key]
     if set(have) != set(range(1, N + 1)):
         print("unpack: state %s incomplete: have parts %s of %d" % (date, sorted(have), N)); return 1
-    text = "".join(norm(have[i]) for i in range(1, N + 1))
-    text = text.rstrip("\n")
+    text = "\n".join(norm_part(have[i]) for i in range(1, N + 1))
     got = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if got != sha:
         # tolerate a lost trailing newline only

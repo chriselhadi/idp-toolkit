@@ -43,7 +43,7 @@ def main():
             bits = []
             if ch["started"]: bits.append("started " + ", ".join(ch["started"]))
             if ch["stopped"]: bits.append("stopped " + ", ".join(ch["stopped"]))
-            if ch["moved"]: bits.append("moved %s -> %s" % ch["moved"])
+            if ch["moved"]: bits.append("moved %s -> %s" % tuple(ch["moved"]))
             L.append("  %s %s: %s" % (ch["room"], ch["name"], "; ".join(bits)))
         if not delta["changes"]: L.append("  none")
         L.append(""); L.append("4. Counts: today %d standing, yesterday %d" % (delta["counts"]["today"], delta["counts"]["yday"]))
@@ -84,6 +84,8 @@ def main():
     gaps = len(unexpl) + len(census.get("single_dose", [])) + len(census.get("paeds", [])) + len(census.get("no_fellow", [])) + len(a.get("absent", [])) + len(a.get("stale", []))
     L.append(""); L.append("AMS gaps counted: %d" % gaps)
     txt = "\n".join(L) + "\n"
+    _dash = {0x2013: u"-", 0x2014: u"-"}
+    txt = txt.translate(_dash)
     open(os.path.join(out, "delta.txt"), "w", encoding="utf-8").write(txt)
     H = ["<html><body style='font-family:Calibri,Arial;font-size:13px'>"]
     for ln in L:
@@ -91,7 +93,7 @@ def main():
         elif re.match(r"^(\d\.|\d-\d\.|AMS|AS-list|Single|Paeds|Restricted|Outstanding)", ln): H.append("<b>%s</b><br>" % html.escape(ln))
         else: H.append("%s<br>" % html.escape(ln).replace("  ", "&nbsp;&nbsp;"))
     H.append("</body></html>")
-    open(os.path.join(out, "delta.html"), "w", encoding="utf-8").write("\n".join(H))
+    open(os.path.join(out, "delta.html"), "w", encoding="utf-8").write("\n".join(H).translate(_dash))
     fl = [f for f in getattr(mod, "FLAGS_EXTRA", [])]
     open(os.path.join(out, "flags_email.txt"), "w", encoding="utf-8").write(("Flags (suggested edits to the instructions)\n" + "\n".join(fl) + "\n") if fl else "Flags: none\n")
     print("run status: " + run_status)
