@@ -14,6 +14,56 @@ from common import jload, jdump, iso_from_ddmm
 from validate_synth import load_synth, ABX_RE, PEND_RE
 
 
+DAYBLOCK_RE = re.compile(r"(?=(?:^|\s)\d{2}/\d{2}(?:\s+sources?\b|\s*:))")
+CARRY_CAP = 400    # per patient: conclusions no source will repeat back to me tomorrow
+PURGE_DAYS = 2     # days with no ward row and no AS list row before the record is deleted
+EARLIER_TAG = "[earlier] "
+EARLIER_END = " [/earlier]"
+KEEP_DAYS = 2           # day-blocks kept verbatim in each narrative log
+OLD_SENTENCE_CAP = 200  # chars kept from each older day-block
+EARLIER_CAP = 700       # hard ceiling on the whole compacted history, oldest dropped first
+
+
+def compact_log(text):
+    """Keep the last KEEP_DAYS day-blocks verbatim; compress everything older into a
+    bounded [earlier] preamble.
+
+    The narrative logs are append-only and grew every morning without limit, which is what
+    made the nightly state email so large. Capping the preamble is what makes the log
+    plateau instead of merely growing more slowly. The load-bearing facts (issues,
+    abx_history, micro, pendings_state) live in separate structured fields and are NOT
+    touched here; this only trims prose that earlier runs have already consumed.
+    """
+    if not text:
+        return text
+    # Peel off a preamble an earlier run wrote. The closing marker makes this exact:
+    # the preamble itself contains dates, so a regex boundary would be ambiguous.
+    prior = ""
+    if text.startswith(EARLIER_TAG) and EARLIER_END in text:
+        prior, text = text[len(EARLIER_TAG):].split(EARLIER_END, 1)
+        prior, text = prior.strip(), text.strip()
+
+    parts = [p.strip() for p in DAYBLOCK_RE.split(text) if p and p.strip()]
+    if len(parts) <= KEEP_DAYS and not prior:
+        return text
+    old, recent = parts[:-KEEP_DAYS], parts[-KEEP_DAYS:]
+
+    squeezed = [prior] if prior else []
+    for blk in old:
+        first = re.split(r"(?<=[.;])\s+", blk)[0].strip()
+        if first:
+            squeezed.append(first[:OLD_SENTENCE_CAP].rstrip(" ,;"))
+    hist = " ".join(s for s in squeezed if s)
+    if len(hist) > EARLIER_CAP:                 # drop the oldest, keep a clean sentence edge
+        hist = hist[len(hist) - EARLIER_CAP:]
+        cut = hist.find(". ")
+        hist = ("... " + hist[cut + 2:]) if cut != -1 else ("... " + hist)
+    hist = hist.strip()
+    if not hist:
+        return " ".join(recent).strip()
+    return (EARLIER_TAG + hist + EARLIER_END + " " + " ".join(recent)).strip()
+
+
 def finalize(state_p, synth_p, census_p, as_p, today, out_p):
     state = jload(state_p); mod = load_synth(synth_p); census = jload(census_p)
     as_today = jload(as_p) if as_p and as_p.upper() != "MISSING" and os.path.exists(as_p) else None
@@ -22,6 +72,22 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
         pid = c["pid"]; e = mod.SYNTH[pid]; rec = state["patients"][pid]
         keep = {k: e[k] for k in e}
         keep.update({"_room": c["room"], "_group": c["group"], "_fellow": c.get("fellow", ""), "_tags": c.get("tags", []), "_date": today})
+        # The ward handoff docs are cumulative: every morning they hand back the whole
+        # admission narrative. Carrying my own copy of it was duplicating a source I
+        # re-read anyway. log_im is dropped outright; log_id survives only as a short
+        # capped "carry" holding conclusions no source will repeat back to me tomorrow
+        # (reconciliations, contradictions I already settled). The non-recoverable facts
+        # -- how long a culture has been outstanding, when a drug actually started --
+        # live in pendings_state and abx_history and are untouched.
+        keep.pop("log_im", None)
+        carry = (keep.pop("carry", "") or "").strip() or (keep.pop("log_id", "") or "")
+        keep.pop("log_id", None)
+        if carry:
+            carry = compact_log(carry)
+            if len(carry) > CARRY_CAP:
+                cut = carry.rfind(". ", 0, CARRY_CAP)
+                carry = carry[:cut + 1] if cut > 120 else carry[:CARRY_CAP].rstrip() + "..."
+        keep["carry"] = carry
         rec["synth"] = keep
         old = {p["item"]: p for p in rec.get("pendings_state", [])}
         newp = []
@@ -39,6 +105,58 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
                 if not m: continue
                 hist[m.group("drug")] = {"drug": m.group("drug"), "line": ab, "issue": blk, "last": today}
         rec["abx_history"] = list(hist.values())
+    # A departing patient gets ONE archive note, on the first morning they are absent from
+    # every source. Chris seals the AMS row block from it by hand, so it has to stand alone:
+    # the daily handout is a mid-stream snapshot and was never written to close a case.
+    notes = []
+    for pid, rec in state["patients"].items():
+        if pid in {c["pid"] for c in census["patients"]} or rec.get("archive_note_sent"):
+            continue
+        sy = rec.get("synth", {}) or {}
+        L = ["ARCHIVE  %s  %s  (MRN %s)" % (sy.get("_room", "?"), rec["name"], rec.get("mrn") or "?"),
+             "  first seen by ID %s, last seen %s   (hospital admission date is in the one-liner)"
+             % (rec.get("first_seen", "?"), rec.get("last_seen", "?")),
+             "  " + (sy.get("one_liner") or "no one-liner on file")]
+        if sy.get("issues"):
+            L.append("  PROBLEMS")
+            for i in sy["issues"]:
+                L.append("    - " + i.get("dx", ""))
+        if rec.get("abx_history"):
+            L.append("  ANTIMICROBIAL COURSE")
+            for h in rec["abx_history"]:
+                L.append("    - " + h["line"])
+        if sy.get("micro"):
+            L.append("  MICRO")
+            for m in sy["micro"]:
+                L.append("    - " + m)
+        if rec.get("pendings_state"):
+            L.append("  STILL OUTSTANDING AT DEPARTURE")
+            for pe in rec["pendings_state"]:
+                L.append("    - %s (since %s)%s" % (pe["item"], pe["since"],
+                                                    " -> " + pe["gate"] if pe.get("gate") else ""))
+        if sy.get("carry"):
+            L.append("  NOTE  " + sy["carry"])
+        notes.append("\n".join(L))
+        rec["archive_note_sent"] = today
+    outdir = os.path.dirname(os.path.abspath(out_p))
+    open(os.path.join(outdir, "archive_notes.txt"), "w", encoding="utf-8").write(
+        ("\n\n".join(notes) + "\n") if notes else "")
+    print("archive notes: %d patient(s) left the service today" % len(notes))
+
+    # Purge patients who have gone quiet. Their history is not mine to hold: it goes onto
+    # the AMS sheet by hand and it is in the emails already sent. A readmission inside the
+    # window simply starts a fresh record, which is what the AMS archive is for.
+    on_census = {c["pid"] for c in census["patients"]}
+    cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=PURGE_DAYS)).isoformat()
+    purged = [pid for pid, rec in state["patients"].items()
+              if pid not in on_census and (rec.get("last_seen") or "9999") < cutoff]
+    for pid in purged:
+        print("purged %s %s (last seen %s)" % (pid, state["patients"][pid]["name"][:30],
+                                               state["patients"][pid].get("last_seen")))
+        del state["patients"][pid]
+    if purged:
+        print("purged %d discharged record(s); history lives on the AMS sheet and in sent emails" % len(purged))
+
     if as_today:
         state["as_snapshot"] = {"list_date": as_today.get("list_date"), "patients": [
             {k: p.get(k) for k in ("mrn", "name", "room", "group", "drugs", "standing_drugs", "once_only")} for p in as_today["patients"]]}

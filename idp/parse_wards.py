@@ -91,9 +91,17 @@ def pick_name(raw0, head):
     return (m.group(1) if m else re.split(r"\s{2,}|\n", first)[0]).strip(" .-#:")
 
 
+HDR_CELL = re.compile(r"^\**\s*(?:past\s+)?(?:medical\s+)?history\s*\**\s*$", re.I)
+
+
+def is_header_cell(c):
+    """True only when the cell IS the column label, not a cell that mentions the word."""
+    return bool(HDR_CELL.match(c.strip()))
+
+
 def is_noise(cells):
     c0 = cells[0]
-    if not c0.strip() or "Patient X" in c0 or ":-:" in c0 or "History" in cells[1]:
+    if not c0.strip() or "Patient X" in c0 or ":-:" in c0 or is_header_cell(cells[1]):
         return True
     if len(re.findall(r"\b\d{4}\b", c0 + cells[1])) >= 6 and not DATE_RE.search(c0):
         return True  # phone directory row

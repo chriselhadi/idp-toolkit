@@ -138,10 +138,20 @@ def compute_delta(as_today, as_yday):
                        "new": len(new), "off": len(off), "changed": len(changes)}}
 
 
+# Orphan guard thresholds. Six genuine orphans out of 27 is a normal morning here, so a
+# flat count is useless. What signalled the 08.09.2026 parser fault was the JUMP: orphans
+# went 6 -> 11 and ward rows fell 76 -> 62 between two runs of the same four documents.
+ORPHAN_FRACTION = 0.40   # absolute ceiling: this many orphans is not a records failure
+ORPHAN_JUMP = 4          # rise in orphan count vs the previous run
+WARDROW_DROP = 0.15      # fractional fall in parsed ward rows vs the previous run
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("state"); ap.add_argument("as_today"); ap.add_argument("wards"); ap.add_argument("ams"); ap.add_argument("out")
-    ap.add_argument("--date", required=True); ap.add_argument("--roster"); ap.add_argument("--as-yday")
+    ap.add_argument("--date", required=True); ap.add_argument("--roster"); ap.add_argument("--allow-orphans", action="store_true",
+                    help="proceed past the orphan guard once the ward parse is confirmed sound")
+    ap.add_argument("--as-yday")
     a = ap.parse_args()
     today = parse_date(a.date)
     os.makedirs(a.out, exist_ok=True)
@@ -281,6 +291,10 @@ def main():
     jdump({r["pid"]: r["ward_rows"] for r in ordered}, os.path.join(a.out, "ward_rows.json"))
     state["next_pid"] = reg.next
     state["_census_pids"] = [r["pid"] for r in ordered]
+    orphans = [r for r in ordered if r["orphan"]]
+    nrows = len(wards) if wards else 0
+    prev_stats = dict(state.get("run_stats") or {})   # keep the PREVIOUS run for the guard
+    state["run_stats"] = {"orphans": len(orphans), "ward_rows": nrows, "census": len(ordered)}
     jdump(state, os.path.join(a.out, "state_matched.json"))
     flags += reg.flags[len(flags) and 0:]  # registry flags gathered during matching
     seen = set(); fl = [f for f in flags if not (f in seen or seen.add(f))]
@@ -324,6 +338,35 @@ def main():
         len(ordered), sum(r["new"] for r in ordered), sum(r["orphan"] for r in ordered), len(archived_today), len(single_dose),
         "sent" if roster else "none", (as_today or {}).get("list_date"), len(wards) if wards else 0, len(ams) if ams else 0,
         delta["computed"], len(fl), len(pend_lines), cold))
+
+    # Orphan guard. On 08.09.2026 a parser fault silently dropped 14 ward rows and five
+    # patients were published as "no documentation anywhere" when the ward docs held full
+    # entries. A cluster of orphans is far more likely to be a parsing failure than a
+    # hospital-wide documentation failure, so stop and make someone look.
+    prev = prev_stats
+    reasons = []
+    if ordered and len(orphans) / len(ordered) > ORPHAN_FRACTION:
+        reasons.append("%d of %d patients (%.0f%%) have no ward row, over the %.0f%% ceiling"
+                       % (len(orphans), len(ordered), 100 * len(orphans) / len(ordered),
+                          100 * ORPHAN_FRACTION))
+    if prev.get("orphans") is not None and len(orphans) - prev["orphans"] >= ORPHAN_JUMP:
+        reasons.append("orphans jumped %d -> %d since the last run" % (prev["orphans"], len(orphans)))
+    if prev.get("ward_rows") and nrows < prev["ward_rows"] * (1 - WARDROW_DROP):
+        reasons.append("parsed ward rows fell %d -> %d" % (prev["ward_rows"], nrows))
+    if reasons:
+        print("")
+        print("ORPHAN ALERT: " + "; ".join(reasons) + ".")
+        for r in orphans:
+            print("   %-6s %-8s %s" % (r["pid"], r.get("room", "?"), r["name"][:34]))
+        print("Check the ward-doc parser before building. Confirm each name really is absent "
+              "from the floors, ICU, cardiology and neurology documents:")
+        print("   for f in floors icu cardio neuro; do grep -ci '<surname>' in/$f.json; done")
+        print("Re-run with --allow-orphans once the parse is confirmed sound.")
+        if not a.allow_orphans:
+            sys.exit(2)
+    else:
+        print("orphan guard: %d/%d orphans, %d ward rows, no jump vs last run"
+              % (len(orphans), len(ordered), nrows))
 
 
 if __name__ == "__main__":

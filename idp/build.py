@@ -4,7 +4,7 @@
 Usage: build.py <workdir> "<DD Month YYYY>" --date YYYY-MM-DD [--as-today in/as_today.json] [--ams in/ams.json] [--max-b64 13000]
 Expects <workdir>/synth.py and <workdir>/out/ from match.py. Stops on the first validator error.
 """
-import sys, os, re, json, argparse, subprocess, datetime as dt
+import sys, os, re, json, base64, hashlib, argparse, subprocess, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
 from common import jload, ddmm
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,28 +47,53 @@ def coverage(work, today):
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument("work"); ap.add_argument("date_label"); ap.add_argument("--date", required=True)
     ap.add_argument("--as-today", default="MISSING"); ap.add_argument("--ams", default="MISSING"); ap.add_argument("--max-b64", type=int, default=13000)
+    ap.add_argument("--single-docx", action="store_true", default=True)
+    ap.add_argument("--split-docx", dest="single_docx", action="store_false")
     a = ap.parse_args()
     work = os.path.abspath(a.work); out = os.path.join(work, "out"); synth = os.path.join(work, "synth.py")
     run(os.path.join(HERE, "validate_synth.py"), synth, os.path.join(out, "census.json"), a.date, must="0 errors")
     run(os.path.join(HERE, "report.py"), out, synth, a.date, a.ams)
     run(os.path.join(HERE, "render.py"), synth, os.path.join(out, "census.json"), a.date, out)
-    run(os.path.join(HERE, "split_docx.py"), out, a.date_label, str(a.max_b64))
-    for p in json.load(open(os.path.join(out, "parts", "manifest.json")))["parts"]:
-        if p["verify"] != "PASS":
-            print("BUILD STOPPED: DOCX part %d failed verification" % p["n"]); sys.exit(1)
+    if a.single_docx:
+        # One attachment, one transcription, one verification. The old 5-way split existed
+        # because the EMAIL BODY exceeded 30000 chars, not because the DOCX was too big;
+        # the recap now goes out as its own email so the body no longer forces a split.
+        docx = os.path.join(out, "ID_Handout_%s.docx" % a.date_label.replace(" ", "_"))
+        run(os.path.join(HERE, "build_docx.py"), os.path.join(out, "render.json"), docx, a.date_label)
+        run(os.path.join(HERE, "verify_docx.py"), docx, os.path.join(out, "render.json"),
+            must="ALL CHECKS PASSED")
+        b = open(docx, "rb").read()
+        b64 = base64.b64encode(b).decode()
+        open(os.path.join(out, "handout.b64"), "w").write(b64)
+        json.dump({"file": os.path.basename(docx), "bytes": len(b),
+                   "sha256": hashlib.sha256(b).hexdigest(), "b64_chars": len(b64)},
+                  open(os.path.join(out, "handout_manifest.json"), "w"), indent=1)
+        print("handout: 1 attachment, %d bytes, %d base64 chars" % (len(b), len(b64)))
+    else:
+        run(os.path.join(HERE, "split_docx.py"), out, a.date_label, str(a.max_b64))
+        for p in json.load(open(os.path.join(out, "parts", "manifest.json")))["parts"]:
+            if p["verify"] != "PASS":
+                print("BUILD STOPPED: DOCX part %d failed verification" % p["n"]); sys.exit(1)
     run(os.path.join(HERE, "state_io.py"), "finalize", os.path.join(out, "state_matched.json"), synth, os.path.join(out, "census.json"),
         a.as_today, a.date, os.path.join(out, "state_new.json"))
     run(os.path.join(HERE, "state_io.py"), "pack", os.path.join(out, "state_new.json"), os.path.join(out, "state_parts"))
     coverage(work, a.date)
-    recap = open(os.path.join(out, "recap_concise.txt"), encoding="utf-8").read()
-    flags = open(os.path.join(out, "flags_email.txt"), encoding="utf-8").read()
-    body = recap.rstrip() + "\n\n" + flags
-    open(os.path.join(out, "handout_body.txt"), "w", encoding="utf-8").write(body)
-    for f in ("handout_body.txt", "delta.txt", "delta.html"):
+    # Email 3 is the WhatsApp handoff: ID content only, no dose, no frequency, no
+    # commentary, and no Flags block (house style; "Flags: none" used to be appended
+    # here and was itself a house-style breach). recap_concise.txt is still written by
+    # render.py but only backs the DOCX now; it is not sent.
+    run(os.path.join(HERE, "render_wa.py"), synth, os.path.join(out, "census.json"),
+        os.path.join(out, "state_matched.json"), a.date, out)
+    body = open(os.path.join(out, "whatsapp.txt"), encoding="utf-8").read().rstrip() + "\n"
+    open(os.path.join(out, "recap_email.txt"), "w", encoding="utf-8").write(body)
+    open(os.path.join(out, "handout_body.txt"), "w", encoding="utf-8").write(
+        "ID Daily Handout Notes, %s. Full text in the recap email; columns 2 and 3 are "
+        "left blank for handwriting.\n" % a.date_label)
+    for f in ("recap_email.txt", "handout_body.txt"):
         n = len(open(os.path.join(out, f), encoding="utf-8").read())
         print("%s: %d chars%s" % (f, n, "  (OVER 30000: split into thread replies)" if n > 30000 else ""))
-    if "—" in body or "—" in open(os.path.join(out, "delta.txt"), encoding="utf-8").read():
-        print("BUILD STOPPED: em dash in output"); sys.exit(1)
+    if "\u2014" in body or "\u2013" in body:
+        print("BUILD STOPPED: em or en dash in output"); sys.exit(1)
     print("BUILD OK")
 
 
