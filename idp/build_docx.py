@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from common import WARD_ORDER, jload
 
 MIN_ROW_TWIPS = 1100
-COL_W = [9400, 3150, 3150]  # twips, A4 landscape with 1 cm margins (15,700 twips usable)
+COL_W = [6540, 2400, 2400]  # twips, A4 portrait with 0.5 cm margins (11,340 twips usable)
 W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 
 CONTENT_TYPES = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -87,7 +87,7 @@ def build(render, out, date_label, groups=None, label=""):
            '<w:tblGrid>%s</w:tblGrid>%s</w:tbl>') % (sum(COL_W), "".join('<w:gridCol w:w="%d"/>' % w for w in COL_W), "".join(rows))
     body.append(tbl)
     body.append(para([run("Columns 2 and 3 are left blank for handwritten notes on rounds. D<n> on a drug line = computed days on drug; ~ = start known only from the AS list; d<n> on a pending = days outstanding.", italic=True, sz=14)]))
-    sect = '<w:sectPr><w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/><w:pgMar w:top="567" w:right="567" w:bottom="567" w:left="567" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>'
+    sect = '<w:sectPr><w:pgSz w:w="11906" w:h="16838" w:orient="portrait"/><w:pgMar w:top="283" w:right="283" w:bottom="283" w:left="283" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>'
     doc = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document %s><w:body>%s%s</w:body></w:document>' % (W, "".join(body), sect)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES); z.writestr("_rels/.rels", RELS)

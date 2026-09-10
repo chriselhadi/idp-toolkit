@@ -82,6 +82,10 @@ def main():
     # commentary, and no Flags block (house style; "Flags: none" used to be appended
     # here and was itself a house-style breach). recap_concise.txt is still written by
     # render.py but only backs the DOCX now; it is not sent.
+    # Email 4 is out/archive_notes.txt, written above by state_io.py finalize. It is its
+    # own email and is NOT appended here: the two together exceed the size at which the
+    # recap would have to be split, and the recap must stay one email. Skip email 4 when
+    # the file is empty, which is most mornings.
     run(os.path.join(HERE, "render_wa.py"), synth, os.path.join(out, "census.json"),
         os.path.join(out, "state_matched.json"), a.date, out)
     body = open(os.path.join(out, "whatsapp.txt"), encoding="utf-8").read().rstrip() + "\n"

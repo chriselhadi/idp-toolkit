@@ -3,13 +3,19 @@
 Changed 08.09.2026 after a morning that pushed ~1.1 MB of text through the model,
 almost all of it mechanical copying.
 
-## Emails (three, in this order)
+## Emails (up to four, in this order)
 
 1. **AS List Delta Report** - `out/delta2.html` as htmlBody, `out/delta2.txt` as body.
 2. **ID Daily Handout Notes** - body is `out/handout_body.txt` (two lines).
    ONE attachment: the file named in `out/handout_manifest.json`, base64 in `out/handout.b64`.
-3. **ID Daily Recap** - body is `out/recap_email.txt`. Plain text. Split into thread
-   replies at 30000 chars if needed; splitting text is cheap and safe.
+3. **ID Daily Recap** - body is `out/recap_email.txt` (the WhatsApp handoff, written by
+   `render_wa.py`). Plain text, ONE email. Measured 10.09.2026: a 25264-char body goes in a
+   single tool call byte-exact. Do not split it. If it ever does exceed 30000 chars, split
+   into thread replies rather than separate emails.
+4. **Archive notes** - body is `out/archive_notes.txt`, subject `ID handoff <dd.mm.yyyy>
+   archive notes`. Plain text, ONE email. **Skip this email entirely when the file is empty**,
+   which is the common case: most mornings nobody has left the service. Never send an empty
+   or header-only archive email.
 
 The handout is no longer split into five parts. That split existed only because the recap
 used to ride in the email body and blew the 30000-char limit. The recap has its own email
@@ -20,10 +26,28 @@ now, so one DOCX goes out as one attachment.
 Measured on 08.09.2026: prose transcription 18/18 correct, base64 transcription 2 failures
 in 7. Verify accordingly.
 
-- **Attachments: always verify.** `cmp` the typed base64 against `out/handout.b64` before
-  sending, then `verify_part.py` after. On a mismatch, re-zip the DOCX
-  (`zipfile.ZIP_DEFLATED, compresslevel=9`) to change the byte pattern and retype; that
-  reliably clears a repeat single-character error at a fixed offset.
+**Send every clinical email through the draft relay (added 10.09.2026).** Never send an
+attachment or a long body directly. The relay makes one deliverable one email no matter how
+many attempts the transcription takes:
+
+1. `create_draft` with the full body and, for the handout, the whole of `out/handout.b64`
+   as one attachment.
+2. `get_draft` with `messageFormat: RAW`. Large drafts spill to a tool-result file;
+   `draft_relay.py` reads either.
+3. `draft_relay.py draft <draftId> <local file> attach <filename>` for the handout, or
+   `... body` for a text email. It checks the recipient is chriselhadi@gmail.com and nobody
+   else, then compares bytes. On a mismatch it prints the offset of the first bad character
+   and the context either side.
+4. On a mismatch, `update_draft` with the corrected string (attachments are NOT merged, so
+   re-supply the attachment), then verify again. Repeat until MATCH.
+5. `send_message` with `draftId`, then `draft_relay.py msg <messageId> ...` to confirm what
+   was actually sent.
+
+The repair loop happens in Drafts, so Chris never sees a corrupt email and never sees a
+deliverable arrive in pieces. Splitting a deliverable is NOT a remedy for a transcription
+error: on 10.09.2026 the handout went out as 5 emails and the recap as 3 for that reason,
+and nothing involved was anywhere near Gmail's 25MB ceiling. Chris's standing rule about
+halving an oversized email applies to genuine size limits only.
 - **State parts: verify the first, the last, and any part whose send looked odd.** Spot
   checks, not all N. A wrong part is caught tomorrow by the sha256 in the header, which
   covers the whole state, so a miss costs a rebuild and not a wrong handout.
@@ -50,7 +74,13 @@ in 7. Verify accordingly.
 
 `out/archive_notes.txt` is written by `state_io.py finalize`. It holds one block per patient
 who has left the service, emitted ONCE, on the first morning they are absent from the AS
-list and all four ward docs. Send it as a short section at the end of the recap email.
+list and all four ward docs.
+
+It goes as its own email, number 4, decided by Chris 10.09.2026. It used to be specified as
+a section at the end of the recap, but the two together run to about 38500 chars on a normal
+day and the recap alone is already 25000, so appending it forces a split of the one email
+that must not be split. A separate email also keeps the sealing work in one place: this is
+the note Chris works from, not something to scroll past at the end of the handoff.
 
 Chris seals the AMS row block from this note by hand and the record is then deleted here.
 So the note has to stand alone: the daily handout is a mid-stream snapshot and was never
