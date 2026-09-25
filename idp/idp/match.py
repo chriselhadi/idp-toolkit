@@ -58,6 +58,11 @@ class Registry:
         toks = name_tokens(name)
         best, score = None, 0.0
         for pid, rec in self.p.items():
+                  toks = name_tokens(name)
+        best, score = None, 0.0
+        for pid, rec in self.p.items():
+            if mrn and rec.get("mrn") and rec["mrn"] != mrn:
+                continue  # a different stored MRN vetoes a fuzzy name match
             for a in [rec["name"]] + rec.get("aliases", []):
                 j = name_sim(name, a)
                 if j > score:
@@ -91,6 +96,13 @@ def ward_lookup(wards, name, room):
         j = name_sim(name, row.get("name", ""))
         if j >= 0.5 or (row.get("room") and room and row["room"].upper() == room.upper() and j >= 0.34):
             hits.append((j, row))
+              # Once one row's room confirms the patient's room, distrust rows that contradict it:
+    # a fuzzy name match alone has attached other patients' rows (a 707A cardiology row
+    # onto an ICU6B patient). Rows with no room recorded are still kept.
+    if room:
+        ru = room.upper()
+        if any(h[1].get("room") and h[1]["room"].upper() == ru for h in hits):
+            hits = [h for h in hits if not (h[1].get("room") and h[1]["room"].upper() not in (ru, "?"))]
     hits.sort(key=lambda h: (-(h[1].get("doc") in ("floors", "icu")), -h[0]))
     return [h[1] for h in hits]
 
