@@ -35,13 +35,15 @@ def main():
               "recap_email.txt", "state_parts/manifest.json"):
         t = rd(f)
         check(bool(t and t.strip()), "%s present and non-empty" % f)
+    try:
+        _nparts = len(json.loads(rd("handout_manifest.json") or "{}").get("parts", []))
+    except Exception:
+        _nparts = 1
     for f, lim in LIMITS.items():
         if f == "state_part":
             continue
-        t = rd(f)
-        if t is not None:
-            check(len(t) < lim, "%s %d chars < %d" % (f, len(t), lim))
-    for f in ("delta2.html", "delta2.txt", "handout.html", "handout_body.txt", "recap_email.txt", "archive_notes.txt"):
+        if f == "handout.html" and _nparts > 1:
+            continue  # split handout: the monolith is never sent; each part is checked below
         t = rd(f)
         if t is None:
             continue
