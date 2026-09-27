@@ -77,8 +77,7 @@ def main():
     body = open(os.path.join(out, "whatsapp.txt"), encoding="utf-8").read().rstrip() + "\n"
     open(os.path.join(out, "recap_email.txt"), "w", encoding="utf-8").write(body)
     open(os.path.join(out, "handout_body.txt"), "w", encoding="utf-8").write(
-        "ID Service Daily Handout, %s. This email is the printable handout (HTML). Print from "
-        "Gmail on A4 portrait; columns 2 and 3 are left blank for handwriting.\n" % a.date_label)
+        "ID Daily Handout, %s. Open in an HTML-capable mail client to read the handout.\n" % a.date_label)
     for f in ("recap_email.txt", "handout_body.txt"):
         n = len(open(os.path.join(out, f), encoding="utf-8").read())
         print("%s: %d chars%s" % (f, n, "  (OVER 30000: split into thread replies)" if n > 30000 else ""))
