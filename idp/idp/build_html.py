@@ -9,8 +9,8 @@ Why HTML and not DOCX: the attachment has to travel as base64 inside a tool call
 random base64 does not survive that past roughly 2,000 characters (14.09.2026: three
 identical single-character corruptions at offset 1833, DOCX never sent). Structured
 text transcribes byte-exactly at 25,000 characters, so the handout now goes as the
-email itself, printable from Gmail: A4 portrait, three columns, columns 2 and 3 empty
-for handwriting, greyscale only, new patients shaded #f0f0f0.
+email itself. Since 26.09.2026 (Chris): one column of stacked cards in the AS List Delta
+Report style, no handwriting columns, greyscale only, new patients shaded #f0f0f0.
 """
 import sys, os, json, hashlib
 from html import escape
@@ -24,37 +24,42 @@ TD = "border:1px solid #808080;padding:2px 4px;vertical-align:top;text-align:lef
 KEYS = ("Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ")
 
 
+INK, MUTED, LINE, GREY, WHITE = "#141414", "#5f5f5f", "#dcdcdc", "#f0f0f0", "#ffffff"
+
+
 def patient_html(p):
+    """One patient as a stacked card, same look as the AS List Delta Report (Chris,
+    26.09.2026): single column, no table, no handwriting columns, reads on a phone."""
     out = []
     for i, line in enumerate(p["lines_docx"]):
         if i == 0:
-            out.append('<div style="font-weight:bold;font-size:9.5pt%s">%s</div>'
-                       % (";text-decoration:underline" if p.get("new") else "", escape(line)))
+            out.append('<div style="font-size:15px;font-weight:700;color:%s">%s</div>' % (INK, escape(line)))
+        elif i == 1 and not line.startswith(KEYS):
+            out.append('<div style="font-size:13px;color:%s;margin:2px 0 4px 0">%s</div>' % (MUTED, escape(line)))
         elif line.startswith("   "):
-            out.append('<div style="margin-left:14px">%s</div>' % escape(line.strip()))
+            out.append('<div style="padding-left:16px">%s</div>' % escape(line.strip()))
         else:
             for key in KEYS:
                 if line.startswith(key):
-                    out.append('<div><b>%s</b>%s</div>' % (escape(key), escape(line[len(key):])))
+                    out.append('<div style="margin-top:3px"><span style="color:%s">%s</span>%s</div>'
+                               % (MUTED, escape(key), escape(line[len(key):])))
                     break
             else:
-                out.append('<div>%s</div>' % escape(line))
-    return "".join(out)
+                head, sep, rest = line.partition(" | ")
+                out.append('<div style="margin-top:4px"><b>%s</b>%s</div>' % (escape(head), escape(sep + rest)))
+    return ('<div bgcolor="%s" style="padding:10px 8px;border-bottom:1px solid %s;font-size:14px;line-height:1.4;color:%s">%s</div>'
+            % (GREY if p.get("new") else WHITE, LINE, INK, "".join(out)))
 
 
 SPLIT_OVER = 55000   # one tool call transcribes ~50 K safely (14.09.2026); above this, two emails by ward group
 
 
 def build(render, date_label, groups=None, label=""):
-    th = TD + ";font-weight:bold"
-    H = ['<div style="font-family:Calibri,Arial,sans-serif;font-size:8.5pt;color:#000">',
-         '<p style="margin:0 0 4px 0;font-size:12pt;font-weight:bold">ID Service Daily Handout, %s%s</p>'
-         % (escape(date_label), escape(" (%s)" % label) if label else ""),
-         '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;table-layout:fixed">',
-         '<colgroup><col style="width:58%"><col style="width:21%"><col style="width:21%"></colgroup>',
-         '<thead><tr><th bgcolor="#d9d9d9" style="%s">Patient, ID picture</th><th bgcolor="#d9d9d9" style="%s">Vitals / Imaging</th>'
-         '<th bgcolor="#d9d9d9" style="%s">Pendings</th></tr></thead><tbody>' % (th, th, th)]
-    T = ["ID Service Daily Handout, %s%s" % (date_label, (" (%s)" % label) if label else ""), ""]
+    ttl = "ID Daily Handout%s" % ((" (%s)" % label) if label else "")
+    H = ['<div style="margin:0;padding:8px 4px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif">',
+         '<div style="font-size:18px;font-weight:700;color:%s">%s</div>' % (INK, escape(ttl)),
+         None]
+    T = ["ID DAILY HANDOUT%s" % ((" (%s)" % label.upper()) if label else ""), None, ""]
     n = 0
     for g in WARD_ORDER:
         if groups is not None and g not in groups:
@@ -62,18 +67,21 @@ def build(render, date_label, groups=None, label=""):
         grp = [p for p in render["patients"] if p["group"] == g]
         if not grp:
             continue
-        H.append('<tr><td colspan="3" bgcolor="#bfbfbf" style="%s;font-weight:bold;font-size:9pt">%s</td></tr>' % (TD, escape(g)))
-        T.append("== %s ==" % g)
+        H.append('<div style="font-size:13px;font-weight:700;color:%s;margin:18px 0 4px 0;letter-spacing:.06em;text-transform:uppercase">'
+                 '%s <span style="color:%s;font-weight:400">(%d)</span></div><div style="border-top:1px solid %s">'
+                 % (INK, escape(g), MUTED, len(grp), INK))
+        T.append("%s (%d)" % (g.upper(), len(grp))); T.append("")
         for p in grp:
-            td = ('bgcolor="#f0f0f0" ' if p.get("new") else "") + 'style="%s;height:2.2cm"' % TD
-            H.append('<tr style="page-break-inside:avoid"><td %s>%s</td><td %s></td><td %s></td></tr>'
-                     % (td, patient_html(p), td, td))
+            H.append(patient_html(p))
             T.extend(p["lines_docx"]); T.append("")
             n += 1
-    H.append("</tbody></table>")
-    H.append('<p style="margin:4px 0 0 0;font-size:7pt;font-style:italic">Columns 2 and 3 are left blank for handwritten notes on rounds. '
+        H.append("</div>")
+    sub = "%s<br>%d patients" % (escape(date_label), n)
+    H[2] = '<div style="font-size:13px;color:%s;margin:4px 0 0 0;line-height:1.4">%s</div>' % (MUTED, sub)
+    T[1] = "%s | %d patients" % (date_label, n)
+    H.append('<div style="font-size:11px;color:%s;margin:18px 0 0 0;line-height:1.4">Grey card = new to service. '
              "D&lt;n&gt; on a drug line = computed days on drug; ~ = start known only from the AS list; "
-             "d&lt;n&gt; on a pending = days outstanding.</p></div>")
+             "d&lt;n&gt; on a pending = days outstanding.</div></div>" % MUTED)
     return "\n".join(H) + "\n", "\n".join(T).rstrip() + "\n", n
 
 
