@@ -1,0 +1,9 @@
+# Run data never belongs in this repo (patient data stays out of GitHub)
+in/
+out/
+e2e/
+synth.py
+*.json
+!tests/**/*.json
+__pycache__/
+*.pyc
