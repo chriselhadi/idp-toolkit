@@ -27,8 +27,15 @@ def visible(html_text):
 
 
 def main():
+    if len(sys.argv) < 3 or sys.argv[1] in ("-h", "--help"):  # OVERLAY_6 4g
+        print(__doc__)
+        print("<message_id> is the Gmail message id (not a spill path); <file> is a file NAME inside <outdir>.")
+        return 2
     out, mid = sys.argv[1], sys.argv[2]
     fn = sys.argv[3] if len(sys.argv) > 3 else "handout.html"
+    if os.sep in fn:
+        print("verify_handout: <file> is a name inside %s; using %s" % (out, os.path.basename(fn)))
+        fn = os.path.basename(fn)
     local = open(os.path.join(out, fn), encoding="utf-8").read()
     raw = find_raw(mid)
     if not raw:
@@ -37,7 +44,7 @@ def main():
         base64.urlsafe_b64decode(raw["raw"] + "=" * (-len(raw["raw"]) % 4)), policy=policy.default)
     to = (msg.get("To") or "") + (msg.get("Cc") or "") + (msg.get("Bcc") or "")
     addrs = re.findall(r"[\w.+-]+@[\w.-]+", to)
-    if set(addrs) != {"chriselhadi@gmail.com"}:
+    if set(addrs) != {"chriselhadi@gmail.com", "jounblat96@gmail.com", "mariana.elakhrass9666@gmail.com"}:
         print("handout MISMATCH: recipients %r" % addrs); sys.exit(1)
     got = None
     for part in msg.walk():

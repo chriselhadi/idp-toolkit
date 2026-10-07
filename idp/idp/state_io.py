@@ -10,14 +10,14 @@ The email body of part n is the file content verbatim; the first line is the hea
 import sys, os, re, json, glob, base64, hashlib, email, datetime as dt
 from email import policy
 sys.path.insert(0, os.path.dirname(__file__))
-from common import jload, jdump, iso_from_ddmm
+from common import jload, jdump, iso_from_ddmm, strip_doses  # OVERLAY_6 4a
 from validate_synth import load_synth, ABX_RE, PEND_RE
 
 
 DAYBLOCK_RE = re.compile(r"(?=(?:^|\s)\d{2}/\d{2}(?:\s+sources?\b|\s*:))")
 CARRY_CAP = 400    # per patient: conclusions no source will repeat back to me tomorrow
-PURGE_DAYS = 2     # days with no ward row and no AS list row before the record is deleted
-AS_HISTORY_DAYS = 7     # AS list snapshots kept for the delta baseline (see finalize)
+PURGE_DAYS = 14     # days with no ward row and no AS list row before the record is deleted
+AS_HISTORY_DAYS = 3     # AS list snapshots kept for the delta baseline (see finalize)
 EARLIER_TAG = "[earlier] "
 EARLIER_END = " [/earlier]"
 KEEP_DAYS = 2           # day-blocks kept verbatim in each narrative log
@@ -71,6 +71,8 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
     y = int(today[:4])
     for c in census["patients"]:
         pid = c["pid"]; e = mod.SYNTH[pid]; rec = state["patients"][pid]
+        rec.pop("archive_note_sent", None)  # OVERLAY_7: on the census again, the next departure gets a note
+        rec["archived"] = None; rec["archived_reason"] = ""
         keep = {k: e[k] for k in e}
         keep.update({"_room": c["room"], "_group": c["group"], "_fellow": c.get("fellow", ""), "_tags": c.get("tags", []), "_date": today})
         # The ward handoff docs are cumulative: every morning they hand back the whole
@@ -104,14 +106,16 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
             for ab in lines:
                 m = ABX_RE.match(ab)
                 if not m: continue
-                hist[m.group("drug")] = {"drug": m.group("drug"), "line": ab, "issue": blk, "last": today}
+                hist[m.group("drug")] = {"drug": m.group("drug"), "line": strip_doses(ab), "issue": blk, "last": today}
         rec["abx_history"] = list(hist.values())
     # A departing patient gets ONE archive note, on the first morning they are absent from
     # every source. Chris seals the AMS row block from it by hand, so it has to stand alone:
     # the daily handout is a mid-stream snapshot and was never written to close a case.
     notes = []
     for pid, rec in state["patients"].items():
-        if pid in {c["pid"] for c in census["patients"]} or rec.get("archive_note_sent"):
+        if pid in {c["pid"] for c in census["patients"]} or rec.get("archive_note_sent") \
+                or (rec.get("archived_reason") or "").startswith("ID consult in a handoff") \
+                or rec.get("dup_of"):  # OVERLAY_6 4e: a merged duplicate gets no note of its own
             continue
         sy = rec.get("synth", {}) or {}
         L = ["ARCHIVE  %s  %s  (MRN %s)" % (sy.get("_room", "?"), rec["name"], rec.get("mrn") or "?"),
@@ -137,7 +141,7 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
                                                     " -> " + pe["gate"] if pe.get("gate") else ""))
         if sy.get("carry"):
             L.append("  NOTE  " + sy["carry"])
-        notes.append("\n".join(L))
+        notes.append(strip_doses("\n".join(L)))  # OVERLAY_6 4a
         rec["archive_note_sent"] = today
     outdir = os.path.dirname(os.path.abspath(out_p))
     open(os.path.join(outdir, "archive_notes.txt"), "w", encoding="utf-8").write(
@@ -157,6 +161,13 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
         del state["patients"][pid]
     if purged:
         print("purged %d discharged record(s); history lives on the AMS sheet and in sent emails" % len(purged))
+    # Overlay 4 (05.10.2026): off-list records keep only what P3 needs, so the state stays small.
+    SLIM = {"_room", "_group", "_fellow", "_tags", "_date", "name", "one_liner", "micro", "micro_recap", "pendings", "updates"}
+    for pid, rec in state["patients"].items():
+        if pid not in on_census and isinstance(rec.get("synth"), dict):
+            sy = {k: v for k, v in rec["synth"].items() if k in SLIM}
+            sy["updates"] = (sy.get("updates") or [])[-3:]
+            rec["synth"] = sy
 
     if as_today:
         snap = {"list_date": as_today.get("list_date"), "patients": [
@@ -177,11 +188,33 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
     print("state finalized: %d patients (%d active), %d bytes" % (len(state["patients"]), sum(1 for p in state["patients"].values() if p.get("active")), os.path.getsize(out_p)))
 
 
+def _compact_text(obj):
+    """Overlay 4: valid JSON, one patient / AS list / observation per line, compact separators."""
+    C = dict(ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    out = ["{"]; keys = sorted(obj)
+    for i, k in enumerate(keys):
+        v = obj[k]; end = "," if i < len(keys) - 1 else ""
+        if k == "patients" and isinstance(v, dict) and v:
+            out.append(json.dumps(k) + ":{"); pk = sorted(v)
+            for j, p in enumerate(pk):
+                out.append(json.dumps(p) + ":" + json.dumps(v[p], **C) + ("," if j < len(pk) - 1 else ""))
+            out.append("}" + end)
+        elif k in ("as_history", "observations") and isinstance(v, list) and v:
+            out.append(json.dumps(k) + ":[")
+            for j, x in enumerate(v):
+                out.append(json.dumps(x, **C) + ("," if j < len(v) - 1 else ""))
+            out.append("]" + end)
+        else:
+            out.append(json.dumps(k) + ":" + json.dumps(v, **C) + end)
+    out.append("}")
+    return "\n".join(out)
+
+
 def pack(state_p, pdir, maxc=25000):
     os.makedirs(pdir, exist_ok=True)
     for f in glob.glob(os.path.join(pdir, "part*.txt")): os.remove(f)
     obj = jload(state_p); date = obj.get("date")
-    text = json.dumps(obj, ensure_ascii=False, indent=1, sort_keys=True)
+    text = _compact_text(obj)
     full_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
     lines = text.split("\n"); chunks, cur, size = [], [], 0
     for ln in lines:

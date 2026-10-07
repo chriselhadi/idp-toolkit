@@ -21,6 +21,15 @@ HDR_ALIASES = {
 }
 
 
+LOOSE_ALIASES = {
+    "mrn": ["file no", "file number", "patient id", "pt id", "hospital no", "record no", "mrn#", "pid"],
+    "name": ["name", "patient"], "bed": ["location", "ward", "unit", "floor"],
+    "desc": ["drug", "antibiotic", "antimicrobial", "order", "item", "product", "generic"],
+    "valid_from": ["start"], "valid_to": ["stop", "end date"], "admission": ["admission", "admit"],
+}
+QUOTE_RE = re.compile(r'<blockquote|class="gmail_quote|id="divRplyFwdMsg|id="appendonsend|-----Original Message-----|<div[^>]*border-top:\s*solid\s*#E1E1E1', re.I)
+
+
 class TableParser(HTMLParser):
     def __init__(self):
         super().__init__(); self.tables = []; self.row = None; self.cell = None; self.depth = 0
@@ -52,13 +61,23 @@ def map_header(hdr):
                 if key == "weight" and "unit" in hl: continue
                 if key == "duration" and "unit" in hl: continue
                 cols[key] = i
+    used = set(cols.values())
+    for i, h in enumerate(hdr):
+        if i in used: continue
+        hl = (h or "").strip().lower()
+        if not hl: continue
+        for key, als in LOOSE_ALIASES.items():
+            if key in cols: continue
+            if key == "name" and re.search(r"physician|doctor|\bdr\b|nurse|ward|unit|drug|user", hl): continue
+            if any(a in hl for a in als):
+                cols[key] = i; used.add(i); break
     return cols
 
 
 def table_rows(tab):
     """Return list of dict rows if the table looks like an AS list, else []."""
     if not tab or len(tab) < 2: return []
-    for hi in range(min(3, len(tab))):
+    for hi in range(min(8, len(tab))):
         cols = map_header(tab[hi])
         if "mrn" in cols and "name" in cols and "desc" in cols:
             out = []
@@ -179,43 +198,91 @@ def build_patients(rows):
     return out
 
 
+def rows_from_xls(data):
+    import xlrd  # pip install xlrd --break-system-packages
+    wb = xlrd.open_workbook(file_contents=data); best = []
+    for ws in wb.sheets():
+        tab = [[str(c.value) if c.value is not None else "" for c in ws.row(r)] for r in range(ws.nrows)]
+        rows = table_rows(tab)
+        if len(rows) > len(best): best = rows
+    return best
+
+
+def rows_from_text(txt):
+    tab = [re.split(r"\t|\s{2,}|\s*\|\s*", l.strip()) for l in txt.splitlines() if l.strip()]
+    return table_rows(tab)
+
+
+def rows_from_html(html):
+    best = []
+    for t in html_tables(html):
+        r2 = table_rows(t)
+        if len(r2) > len(best): best = r2
+    return best
+
+
 def main(inp, outp):
+    """Overlay 4 (05.10.2026): every source is tried; ranking, best first:
+    0 spreadsheet whose filename date is the arrival date, 1 undated spreadsheet/csv,
+    2 inline HTML table above any quoted reply, 3 plain-text table, 4 spreadsheet with another date,
+    5 table inside quoted (replied-to) text. Ties: more rows."""
     msg = load_message(inp)
     subject = msg.get("subject", ""); sender = msg.get("from", ""); date = msg.get("date", "")
-    tried = []; best = ([], "none"); fnames = []
+    recv = _received_date(date)
+    tried = []; cands = []
     for part in msg.walk():
-        ct = part.get_content_type(); fn = part.get_filename() or ""
-        payload = part.get_payload(decode=True)
-        if payload is None: continue
-        if fn.lower().endswith((".xlsx", ".xlsm", ".xls", ".csv")): fnames.append(fn)
-        rows = []
+        ct = part.get_content_type(); fn = part.get_filename() or ""; fl = fn.lower()
+        if part.is_multipart(): continue
         try:
-            if fn.lower().endswith((".xlsx", ".xlsm")) or "spreadsheetml" in ct:
-                rows = rows_from_xlsx(payload); tried.append("attachment:%s" % fn)
-            elif fn.lower().endswith(".csv"):
-                rows = rows_from_csv(payload); tried.append("attachment:%s" % fn)
-            elif fn.lower().endswith((".htm", ".html")) or ct == "text/html":
+            payload = part.get_payload(decode=True)
+        except Exception:
+            payload = None
+        if payload is None: continue
+        fdate = _date_in(fn) if fn else None
+        sheet_prio = 0 if (fdate and fdate == recv) else (1 if not fdate else 4)
+        try:
+            if fl.endswith((".xlsx", ".xlsm")) or "spreadsheetml" in ct:
+                label = "attachment:%s" % fn; tried.append(label)
+                cands.append((sheet_prio, rows_from_xlsx(payload), label, fdate))
+            elif fl.endswith(".xls") or ct == "application/vnd.ms-excel":
+                label = "attachment:%s" % fn
+                try:
+                    cands.append((sheet_prio, rows_from_xls(payload), label, fdate)); tried.append(label)
+                except ImportError:
+                    tried.append(label + " (xls: run pip install xlrd --break-system-packages, then re-run)")
+            elif fl.endswith(".csv") or ct == "text/csv":
+                label = "attachment:%s" % fn; tried.append(label)
+                cands.append((sheet_prio, rows_from_csv(payload), label, fdate))
+            elif fl.endswith((".htm", ".html")) or ct == "text/html":
                 html = payload.decode(part.get_content_charset() or "utf-8", "replace")
+                m = QUOTE_RE.search(html)
+                fresh, quoted = (html[:m.start()], html[m.start():]) if m else (html, "")
                 label = "attachment:%s" % fn if fn else "inline html"
                 tried.append(label)
-                for t in html_tables(html):
-                    r2 = table_rows(t)
-                    if len(r2) > len(rows): rows = r2
-            elif fn.lower().endswith(".xls"):
-                tried.append("attachment:%s (xls unsupported)" % fn)
+                cands.append((2 if not fn else sheet_prio, rows_from_html(fresh), label, fdate))
+                if quoted:
+                    tried.append(label + " (quoted part)")
+                    cands.append((5, rows_from_html(quoted), label + " (quoted part)", None))
+            elif ct == "text/plain" and not fn:
+                txt = payload.decode(part.get_content_charset() or "utf-8", "replace")
+                cut = re.search(r"^(>|-----Original Message-----|On .{5,80} wrote:|From: )", txt, re.M)
+                tried.append("plain text")
+                cands.append((3, rows_from_text(txt[:cut.start()] if cut else txt), "plain text", None))
         except Exception as e:
             tried.append("%s (error %s)" % (fn or ct, e.__class__.__name__))
-        if len(rows) > len(best[0]):
-            best = (rows, tried[-1] if tried else ct)
-    rows, src = best
+    good = [c for c in cands if c[1]]
+    good.sort(key=lambda c: (c[0], -len(c[1])))
+    rows, src, fdate = (good[0][1], good[0][2], good[0][3]) if good else ([], "none", None)
     patients = build_patients(rows)
-    out = {"subject": subject, "from": sender, "date": date,
-           "list_date": list_date_from(subject, date, fnames),
-           "source_used": src, "sources_tried": tried, "n_rows": len(rows), "patients": patients}
+    list_date = fdate if (fdate and fdate == recv) else list_date_from(subject, date, ())
+    out = {"subject": subject, "from": sender, "date": date, "list_date": list_date, "received_date": recv,
+           "filename_date": fdate, "source_used": src, "sources_tried": tried, "n_rows": len(rows), "patients": patients}
     jdump(out, outp)
     print("AS list %s: %d order rows, %d patients (%d standing, %d once-only), source=%s" % (
         out["list_date"], len(rows), len(patients), sum(1 for p in patients if not p["once_only"]),
         sum(1 for p in patients if p["once_only"]), src))
+    if fdate and fdate != recv:
+        print("note: chosen file is dated %s but the email arrived %s" % (fdate, recv))
     print("sources tried:", ", ".join(tried) or "none")
     return 0 if rows else 1
 

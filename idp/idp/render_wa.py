@@ -166,16 +166,38 @@ def pend_short(pe):
     return m.group("item") if m else pe
 
 
+CRIT_RE = re.compile(r"^(ICU|CSU|CCU|NICU|PICU)", re.I)
+PRESS_RE = re.compile(r"pressor|levo|norepi|noradr|\bNE\b|dobut|inotrop|vasopress|adrenal|dopamin|milrin|vasopressin", re.I)
+
+
+def status_ward(c, s):
+    """Outside ICU/CSU/CCU the recap Status line drops the pressor clause (Chris, 29.09.2026)."""
+    if CRIT_RE.match(c.get("room") or "") or "ICU" in (c.get("group") or ""):
+        return s
+    parts = [x.strip() for x in s.split("|")]
+    keep = [x for x in parts if not PRESS_RE.search(x)]
+    return " | ".join(keep) if keep else s
+
+
 def block(c, e, today, dropped):
     """Compact block, 14.09.2026 onwards."""
     L = []
     head = "%s %s" % (c["room"], c["name"])
-    if c.get("new") or "new" in c.get("tags", []):
+    if "re-cs" in c.get("tags", []):  # OVERLAY_6 4l
+        head += " (re-cs)"
+    elif c.get("new") or "new" in c.get("tags", []):
         head += " (new)"
-    if "uc" in c.get("tags", []):
+    if any(t.startswith("uc") for t in c.get("tags", [])):
         head += " (UC)"
+    head += " [%s]" % (c.get("fellow") or c.get("ams_fellow") or "?")
     L.append(head)
     L.append(id_line(e["one_liner"]))
+    if e.get("updates"):
+        L.append("Update (ID): " + "; ".join(e["updates"]))
+    if e.get("updates_nonid"):
+        L.append("Update (other): " + "; ".join(e["updates_nonid"]))
+    if e.get("im_detail"):
+        L.append("IM: " + "; ".join(e["im_detail"]))
     for i, iss in enumerate(e["issues"], 1):
         m = DX_RE.match(iss["dx"])
         rx = ("; " + rx_short(iss["abx"], today)) if iss["abx"] else ""
@@ -185,10 +207,16 @@ def block(c, e, today, dropped):
             L.append("%d. %s%s" % (i, iss["dx"], rx))
     if e["abx_other"]:
         L.append("Rx (unlinked): " + rx_short(e["abx_other"], today))
+    if e.get("micro_recap"):
+        L.append("Micro: " + e["micro_recap"])
     if e["vitals"]:
-        L.append("Status: " + e["vitals"][0])
+        L.append("Status: " + status_ward(c, e["vitals"][0]))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_short(p) for p in e["pendings"]))
+    for d, why in (e.get("not_applied") or {}).items():
+        L.append("!! ID rec not applied, %s: %s" % (d, why))
+    for x in e.get("conflicts") or []:
+        L.append("!! Conflict: " + x)
     for v in e["vitals"][1:] + e["micro"]:
         dropped.append("%s %s: [handout only] %s" % (c["room"], c["name"], v))
     return L
@@ -198,7 +226,9 @@ def block_verbose(c, e, today, dropped):
     """The pre-14.09 verbose block, kept for reference and diffing old state."""
     L = []
     head = "%s %s" % (c["room"], c["name"])
-    if c.get("new") or "new" in c.get("tags", []):
+    if "re-cs" in c.get("tags", []):  # OVERLAY_6 4l
+        head += " (re-cs)"
+    elif c.get("new") or "new" in c.get("tags", []):
         head += " (new)"
     if "uc" in c.get("tags", []):
         head += " (UC)"
@@ -262,6 +292,10 @@ def main():
             new = block(c, e, today, dropped)
             out_lines.extend(new); out_lines.append("")
             pe = prev.get(c["pid"])
+            if pe and not all(k in pe for k in ("one_liner", "issues", "abx_other", "vitals", "pendings")):  # OVERLAY_6 4v
+                diffs.append("%s %s: previous record was slimmed off-list, no diff" % (c["room"], c["name"]))
+                diffs.append("")
+                continue
             if pe:
                 old = block(c, pe, today, [])
                 d = [l for l in difflib.unified_diff(old, new, lineterm="", n=0)
@@ -274,6 +308,13 @@ def main():
                 diffs.append("%s %s: new block, nothing to inherit" % (c["room"], c["name"]))
                 diffs.append("")
 
+    SO = getattr(load_synth(synth_p), "SIGNED_OFF", {})
+    off = census.get("cs_id_offlist", [])
+    if off:
+        out_lines.append("*Off the ID list, still ID consulted in handoffs*")
+        for o in off:
+            out_lines.append("%s %s: %s" % (o["room"], o["name"], SO.get(o["pid"], "")))
+        out_lines.append("")
     txt = "\n".join(out_lines).rstrip() + "\n"
     assert "—" not in txt and "–" not in txt, "dash in whatsapp text"
     open(os.path.join(out, "whatsapp.txt"), "w", encoding="utf-8").write(txt)

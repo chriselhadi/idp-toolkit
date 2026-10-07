@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
 """Validate synth.py against the grammars. Errors block the build; warnings print.
 
-Usage: validate_synth.py <synth.py> <census.json> <today ISO>   (exit 1 on any error)
+Usage: validate_synth.py <synth.py> <census.json> <today ISO> [<yesterday's state.json>]   (exit 1 on any error)
+With the state file it warns when not_applied or conflicts are carried verbatim from yesterday (OVERLAY_6 4f):
+keep them only when a source restated them today.
 """
 import sys, os, re, json, importlib.util, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
-from common import jload, iso_from_ddmm, status_line_ok, ROUTINE_LAB, IMAGING
+from common import jload, iso_from_ddmm, status_line_ok, ROUTINE_LAB, IMAGING, find_doses  # OVERLAY_6 4a
+
+
+def _strings(x):
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from _strings(v)
+    elif isinstance(x, (list, tuple)):
+        for v in x:
+            yield from _strings(v)
 
 FREQ = r"(OD|BID|TID|QID|q\d+h|x1|weekly|\?)"
 ROUTE = r"(IV|PO|IM|inh|IT|SC|PR|topical)"
@@ -134,9 +147,55 @@ def validate(mod, census, today):
         alltext = json.dumps(e, ensure_ascii=False)
         if DASH in alltext or "–" in alltext:
             errors.append(w + ": em/en dash present; use comma, colon, parentheses or a new sentence")
+        for _s in _strings({k: v for k, v in e.items() if k != "name"}):  # OVERLAY_6 4a: frequencies only
+            for _d in find_doses(_s):
+                errors.append("%s: dose '%s' in: %s (frequencies only, never a dose)" % (w, _d, _s[:100]))
         size = sum(len(s) for s in [ol] + e["updates"] + [i.get("dx", "") for i in e["issues"] if isinstance(i, dict)] +
                    [ab for _, ab in all_abx] + e["micro"] + e["vitals"] + e["pendings"])
         if size > 1400: warns.append("%s: rendered block about %d chars, written in prose? rewrite tighter" % (w, size))
+    # 28.09.2026 extensions: conflicts, not_applied, im_detail (UC), SIGNED_OFF.
+    for pid, e in S.items():
+        if not isinstance(e, dict):
+            continue
+        c = cens.get(pid, {})
+        mr = e.get("micro_recap")
+        if mr is not None and not isinstance(mr, str):
+            errors.append("%s: micro_recap must be one string" % pid); mr = ""
+        mr = (mr or "").strip()
+        if e.get("micro") and not mr:
+            errors.append("%s: micro_recap missing; write one abbreviated line (e.g. 'UCx 27/09 E. coli ESBL, S Erta/Mero; BCx 27/09 neg; RS ESBL+')" % pid)
+        if mr and not e.get("micro"):
+            errors.append("%s: micro_recap present but micro list empty" % pid)
+        if len(mr) > 160 or "\n" in mr:
+            errors.append("%s: micro_recap must be one line <= 160 chars (%d)" % (pid, len(mr)))
+        if mr:
+            check_forbidden(mr, pid + " micro_recap", errors)
+        for k in ("conflicts", "im_detail", "updates_nonid"):
+            if k in e and not (isinstance(e[k], list) and all(isinstance(x, str) for x in e[k])):
+                errors.append("%s: %s must be a list of strings" % (pid, k))
+        for x in (e.get("conflicts") or []) + (e.get("im_detail") or []) + (e.get("updates_nonid") or []):
+            if isinstance(x, str):
+                check_forbidden(x, pid + " conflicts/im_detail", errors)
+        na = e.get("not_applied", {})
+        if not isinstance(na, dict):
+            errors.append("%s: not_applied must be {drug: reason}" % pid); na = {}
+        drugs = set()
+        for ab in [a for i in e.get("issues", []) if isinstance(i, dict) for a in i.get("abx", [])] + list(e.get("abx_other", [])):
+            m = ABX_RE.match(ab)
+            if m:
+                drugs.add(m.group("drug"))
+        for d in na:
+            if d not in drugs:
+                errors.append("%s: not_applied names %s, which has no drug line" % (pid, d))
+        if any(t.startswith("uc") for t in c.get("tags", [])) and not e.get("im_detail"):
+            errors.append("%s: UC patient (%s) needs im_detail, the fuller internal medicine picture" % (pid, c.get("name")))
+    SO = getattr(mod, "SIGNED_OFF", {})
+    for o in census.get("cs_id_offlist", []):
+        if not isinstance(SO.get(o["pid"]), str) or not SO.get(o["pid"]).strip():
+            errors.append("SIGNED_OFF needs a one-liner for %s (%s %s): off the ID list, still ID consulted in a handoff" % (o["pid"], o["room"], o["name"]))
+    for _pid, _s in (SO or {}).items():  # OVERLAY_6 4a
+        for _d in find_doses(_s if isinstance(_s, str) else ""):
+            errors.append("SIGNED_OFF %s: dose '%s' (frequencies only, never a dose)" % (_pid, _d))
     for f in getattr(mod, "FLAGS_EXTRA", []):
         if DASH in f: errors.append("FLAGS_EXTRA: em dash")
     for o in getattr(mod, "OBSERVATIONS", []):
@@ -145,8 +204,17 @@ def validate(mod, census, today):
 
 
 def main():
+    if len(sys.argv) < 4 or sys.argv[1] in ("-h", "--help"):  # OVERLAY_6 4g
+        print(__doc__); return 2
     mod = load_synth(sys.argv[1]); census = jload(sys.argv[2]); today = sys.argv[3]
     errors, warns = validate(mod, census, today)
+    if len(sys.argv) > 4 and os.path.exists(sys.argv[4]):  # OVERLAY_6 4f
+        _st = jload(sys.argv[4]).get("patients", {})
+        for _pid, _e in getattr(mod, "SYNTH", {}).items():
+            _pv = (_st.get(_pid) or {}).get("synth") or {}
+            for _k in ("not_applied", "conflicts"):
+                if _e.get(_k) and _e.get(_k) == _pv.get(_k):
+                    warns.append("%s: %s carried verbatim from yesterday; keep it only if a source restated it today" % (_pid, _k))
     for x in warns: print("WARN", x)
     for x in errors: print("ERROR", x)
     print("validate: %d errors, %d warnings" % (len(errors), len(warns)))
