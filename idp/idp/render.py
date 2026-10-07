@@ -56,22 +56,33 @@ def pend_line(pe, today):
 def render_patient(c, e, today, with_update):
     L = []
     head = "%s %s" % (c["room"], c["name"])
-    if c.get("new") or "new" in c.get("tags", []):
+    if "re-cs" in c.get("tags", []):  # OVERLAY_6 4l
+        head += " (re-cs)"
+    elif c.get("new") or "new" in c.get("tags", []):
         head += " (new)"
-    if "uc" in c.get("tags", []):
+    if any(t.startswith("uc") for t in c.get("tags", [])):
         head += " (UC)"
-    if c.get("fellow"):
-        head += " [%s]" % c["fellow"]
+    head += " [%s]" % (c.get("fellow") or c.get("ams_fellow") or "?")  # OVERLAY_6 4w: same fallback as the recap
     L.append(head)
     L.append(e["one_liner"])
+    if e.get("im_detail"):
+        L.append("IM detail: " + "; ".join(e["im_detail"]))
+    na = e.get("not_applied") or {}
+
+    def abx_line2(ab):
+        t = abx_line(ab, today)
+        m2 = ABX_RE.match(ab)
+        if m2 and m2.group("drug") in na:
+            t += " [ID rec not applied: %s]" % na[m2.group("drug")]
+        return t
     if with_update:
         L.append("Update: " + "; ".join(e["updates"]))
     for i, iss in enumerate(e["issues"]):
         L.append("%d. %s" % (i + 1, iss["dx"]))
         for ab in iss["abx"]:
-            L.append("   " + abx_line(ab, today))
+            L.append("   " + abx_line2(ab))
     if e["abx_other"]:
-        L.append("Abx (unlinked): " + "; ".join(abx_line(ab, today) for ab in e["abx_other"]))
+        L.append("Abx (unlinked): " + "; ".join(abx_line2(ab) for ab in e["abx_other"]))
     if e["micro"]:
         L.append("Micro: " + "; ".join(e["micro"]))
     status, rest = handout_vitals(e["vitals"])
@@ -81,6 +92,8 @@ def render_patient(c, e, today, with_update):
         L.append("Imaging/key labs: " + "; ".join(rest))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_line(p, today) for p in e["pendings"]))
+    for x in e.get("conflicts") or []:
+        L.append("Conflict: " + x)
     return L
 
 
@@ -91,8 +104,12 @@ def main():
     for c in census["patients"]:
         e = S[c["pid"]]
         pats.append({"pid": c["pid"], "room": c["room"], "group": c["group"] if c["group"] in WARD_ORDER else "Other",
-                     "name": c["name"], "fellow": c.get("fellow", ""), "new": bool(c.get("new") or "new" in c.get("tags", [])),
-                     "lines_docx": render_patient(c, e, today, True), "lines_recap": render_patient(c, e, today, False)})
+                     "name": c["name"], "fellow": c.get("fellow") or c.get("ams_fellow", ""), "new": bool(c.get("new") or "new" in c.get("tags", [])),
+                     "lines_docx": render_patient(c, e, today, False), "lines_recap": render_patient(c, e, today, False),
+                     "uc": any(t.startswith("uc") for t in c.get("tags", []))})
+    SO = getattr(mod, "SIGNED_OFF", {})
+    signed_off = [{"pid": o["pid"], "room": o["room"], "name": o["name"], "line": SO.get(o["pid"], "")}
+                  for o in census.get("cs_id_offlist", [])]
     # recap text grouped by ward, ward order, no Update block
     R = ["ID Daily Handout, %s" % ("%s.%s.%s" % (today[8:10], today[5:7], today[:4]))]
     sp = os.path.join(out, "run_status.txt")
@@ -107,7 +124,7 @@ def main():
         for p in grp:
             R.extend(p["lines_recap"]); R.append("")
     recap = "\n".join(R).rstrip() + "\n"
-    jdump({"date": today, "patients": pats}, os.path.join(out, "render.json"))
+    jdump({"date": today, "patients": pats, "signed_off": signed_off}, os.path.join(out, "render.json"))
     open(os.path.join(out, "recap_concise.txt"), "w", encoding="utf-8").write(recap)
     sizes = [sum(len(l) for l in p["lines_docx"]) for p in pats]
     print("rendered %d patients; docx chars/patient min %d max %d; recap %d chars" % (

@@ -27,6 +27,8 @@ def parse_roster(path):
         if not m:
             continue
         room_tok, rest = m.group(1), m.group(2)
+        if room_tok.upper() == "ER" and re.match(r"^IN\s+", rest):  # OVERLAY_6 4j: 'ER IN <name>'
+            rest = re.sub(r"^IN\s+", "", rest)
         tags = [t.lower() for t in re.findall(r"\(([^)]+)\)", rest)]
         rest = re.sub(r"\([^)]*\)", " ", rest).strip()
         fellow = ""
@@ -34,7 +36,8 @@ def parse_roster(path):
         if mm and mm.group(1).strip():
             rest, fellow = mm.group(1).strip(), mm.group(2)
         room, grp, _ = parse_bed(room_tok)
-        if grp == "Other" and not re.search(r"\d", room_tok):
+        rest = re.sub(r"\s+\?+$", "", rest).strip()
+        if grp == "Other" and not re.search(r"\d", room_tok) and not re.match(r"^(CCU|CSU|ER|NICU|PICU|SCT)", room_tok, re.I) and room_tok != "?":  # OVERLAY_6 4s
             continue  # a heading line, not a patient
         out.append({"room": room, "group": grp, "name": rest.strip(" -:"), "tags": tags, "fellow": fellow, "raw": line})
     return out
@@ -67,6 +70,7 @@ class Registry:
                 j = name_sim(name, a)
                 if j > score:
                     best, score = pid, j
+        self.last_score = score  # OVERLAY_6 4o
         if best and score >= 0.5 and len(toks) >= 2:
             self.flags.append("close match: '%s' -> %s (%s), jaccard %.2f: accepted, check" % (name, best, self.p[best]["name"], score))
             return best, "close"
@@ -85,6 +89,21 @@ class Registry:
             rec["aliases"].append(name)
         if mrn and not rec.get("mrn"):
             rec["mrn"] = mrn
+
+
+def row_is_fresh(row, today, days=4):
+    """True when the newest dd/mm date in a handoff row is within `days` of today."""
+    t0 = dt.date.fromisoformat(today); best = None
+    txt = (row.get("text") or "") + " " + " ".join(row.get("dated_lines") or [])
+    for d, m in re.findall(r"\b(\d{1,2})[./](\d{1,2})\b", txt):
+        try:
+            x = dt.date(t0.year, int(m), int(d))
+        except ValueError:
+            continue
+        if x > t0 + dt.timedelta(days=2):
+            continue
+        best = x if best is None or x > best else best
+    return best is not None and (t0 - best).days <= days
 
 
 def ward_lookup(wards, name, room):
@@ -213,6 +232,7 @@ def main():
     ap.add_argument("--date", required=True); ap.add_argument("--roster"); ap.add_argument("--allow-orphans", action="store_true",
                     help="proceed past the orphan guard once the ward parse is confirmed sound")
     ap.add_argument("--as-yday")
+    ap.add_argument("--orphans-confirmed", help="file, one name per line: orphans confirmed absent from every ward doc")  # OVERLAY_6 4q
     ap.add_argument("--last-delta-sent", help="DD.MM.YYYY from the subject of the newest 'AS List Delta Report' already "
                     "in Gmail; the delta baseline becomes the newest stored AS list on or before that date")
     a = ap.parse_args()
@@ -243,7 +263,7 @@ def main():
             rec["mrn"] = mrn
         if prov not in rec["provenance"]:
             rec["provenance"].append(prov)
-        if room and (rec["room"] is None or PRIORITY[prov] < PRIORITY[rec["room_source"]]):
+        if room and room != "?" and (rec["room"] in (None, "?") or PRIORITY[prov] < PRIORITY[rec["room_source"]]):
             rec["room"], rec["group"], rec["room_source"] = room, grp, prov
         if fellow:
             rec["fellow"] = fellow
@@ -279,20 +299,28 @@ def main():
 
     # 2. AS list: rooms first; new names enter as new consults (standing therapy or ward-doc match); ONCE-only names are shots.
     single_dose = []
+    Y_MRNS = {q.get("mrn") for q in ((as_yday or {}).get("patients") or [])}
     if as_today:
         for p in as_today["patients"]:
             pid, how = reg.find(p["name"], p["mrn"])
-            if not pid and "paeds" in p.get("flags", []):
+            newly = bool(Y_MRNS) and bool(p.get("mrn")) and p["mrn"] not in Y_MRNS
+            if newly and not p.get("once_only"):  # OVERLAY_R
+                if not pid:
+                    pid = reg.add(p["name"], p["mrn"], today)
+                else:
+                    reg.p[pid]["archived"] = None; reg.p[pid]["archived_reason"] = ""
+                flags.append("new on today's AS list, added (%s)" % pid)
+            elif not pid and "paeds" in p.get("flags", []):
                 continue  # paeds never enter the adult census from the AS list; listed in the Delta Report instead
             if not pid:
-                if p.get("once_only") and not ward_lookup(wards, p["name"], p["room"]):
+                if p.get("once_only"):  # OVERLAY_R: once-only never enters, ward row or not
                     single_dose.append("%s %s: %s" % (p["room"], p["name"], ", ".join(p["drugs"])))
                     continue
                 if not p.get("once_only") or ward_lookup(wards, p["name"], p["room"]):
                     pid = reg.add(p["name"], p["mrn"], today)
                 else:
                     continue
-            elif not reg.p[pid].get("active") and roster:
+            elif not reg.p[pid].get("active") and roster and not newly:
                 continue  # came off Chris's list today: the AS list does not put them back
             rec = touch(pid, p["name"], p["mrn"], p["room"], p["group"], "as", "", ["paeds"] if "paeds" in p.get("flags", []) else [])
             rec["as_orders"] = p["orders"]; rec["as_standing"] = p["standing_drugs"]; rec["as_once_only"] = p.get("once_only", False)
@@ -300,14 +328,71 @@ def main():
     else:
         flags.append("no AS list parsed today: rooms from roster > ward doc > prior state")
 
+    # 2b. Handoff rows marked Cs ID / UC ID (Chris, 28.09.2026): a new name enters as a new
+    # consult; a name that came off the ID list is listed once in cs_id_offlist.
+    cs_offlist = []
+    for row in (wards or []):
+        if not (row.get("id_consult") or row.get("uc_id")):
+            continue
+        if not row_is_fresh(row, today):
+            continue  # handoff docs keep old rows for weeks; only rows touched in the last 4 days count
+        nm = (row.get("name") or "").strip()
+        if len(nm) < 5 or re.search(r"patient x|template", nm, re.I):
+            continue
+        rr = parse_bed(row["room"])[0] if row.get("room") and row["room"] != "?" else None
+        if any(ward_lookup([row], c["name"], c["room"]) and (not rr or not c.get("room") or c["room"] in ("?", rr))
+               for c in census.values()):
+            continue
+        same = [c for c in census.values() if len(name_tokens(nm)) >= 2 and name_sim(nm, c["name"]) >= 0.5]
+        if same:
+            if rr and same[0].get("room") not in (None, "?", rr):
+                flags.append("handoff doc room %s differs from today's list room %s for %s; kept today's room" % (rr, same[0].get("room"), same[0]["pid"]))
+            continue
+        pid, how = reg.find(nm)
+        if pid and how == "close" and rr:
+            cur = (census.get(pid) or {}).get("room") or (reg.p[pid].get("synth") or {}).get("_room")
+            if cur and cur != "?" and rr != cur and reg.p[pid].get("archived") != today:
+                if getattr(reg, "last_score", 0) >= 0.66:  # OVERLAY_6 4o: near-identical name, other room: same patient
+                    flags.append("CONFLICT room: %s handoff says %s, %s (%s) is in %s; one record kept" % (
+                        row.get("doc"), rr, pid, reg.p[pid]["name"], cur))
+                else:
+                    pid = None  # fuzzy name hit in another room: a different patient (not one who left the list today)
+        if pid and pid in census:
+            continue
+        if pid and reg.p[pid].get("archived"):
+            if not any(o["pid"] == pid for o in cs_offlist):
+                prev0 = reg.p[pid].get("synth") or {}
+                cs_offlist.append({"pid": pid, "name": reg.p[pid]["name"], "room": row.get("room") or prev0.get("_room") or "?",
+                                   "doc": row.get("doc"), "archived": reg.p[pid].get("archived"), "row": row})
+            continue
+        if not pid:
+            pid = reg.add(nm, None, today)
+        rec0 = reg.p[pid]
+        rec0["active"] = False; rec0["archived"] = rec0.get("archived") or today
+        rec0["archived_reason"] = rec0.get("archived_reason") or "ID consult in a handoff, not on the ID Active Patients list"
+        if not any(o["pid"] == pid for o in cs_offlist):
+            cs_offlist.append({"pid": pid, "name": rec0["name"], "room": row.get("room") or "?",
+                               "doc": row.get("doc"), "archived": rec0["archived"], "row": row})
+        flags.append("ID consult in the %s handoff, not on the ID list: listed off-list only (%s)" % (row.get("doc"), pid))
+
     # 3. Ward rows enrich; AMS enriches and audits.
     for pid, rec in census.items():
         rows = ward_lookup(wards, rec["name"], rec["room"])
         rec["ward_rows"] = rows
-        if rows and not rec["room"]:
-            r0 = rows[0]
-            if r0.get("room"):
+        if rows[:1] and rows[0].get("uc_id") and "uc" not in rec["tags"]:
+            rec["tags"].append("uc")
+        if any(t.startswith("uc") for t in rec["tags"]) and "uc" not in rec["tags"]:
+            rec["tags"].append("uc")
+        if rows and (not rec["room"] or rec["room"] in ("?", "ER")):  # OVERLAY_6 4d: AS > ward row room > ward section
+            r0 = next((x for x in rows if x.get("room") and x["room"] != "?"), rows[0])
+            if r0.get("room") and r0["room"] != "?":
                 room, grp, _ = parse_bed(r0["room"]); rec["room"], rec["group"], rec["room_source"] = room, grp, "ward"
+            else:
+                sec = (r0.get("section") or "").upper()
+                for unit in ("NICU", "PICU", "CCU", "CSU"):
+                    if unit in sec:
+                        room, grp, _ = parse_bed(unit); rec["room"], rec["group"], rec["room_source"] = room, grp, "ward section"
+                        break
         rec["orphan"] = not rows
         blk, status = ams_lookup(ams, rec["name"], rec["mrn"], today)
         rec["ams_status"] = status; rec["ams_block"] = blk
@@ -315,6 +400,8 @@ def main():
         if not rec["room"]:
             rec["room"], rec["group"], rec["room_source"] = "?", "Other", None
             flags.append("no room for %s (%s) from any source" % (rec["name"], pid))
+        if rec["room"] in ("?", "ER"):  # OVERLAY_6 4d
+            flags.append("ROOM UNRESOLVED: %s (%s) room %s; list it in the closing note" % (rec["name"], pid, rec["room"]))
         if rec.get("as_standing") and not rec["fellow"] and not rec["ams_fellow"]:
             rec["no_fellow"] = True
         # carry display fields into the registry so tomorrow's no-list day still has room/fellow/tags
@@ -360,7 +447,13 @@ def main():
     # census "new" follows the same rule, so the handout shades exactly the rule-E patients.
     for r in ordered:
         r["new"] = bool(r.get("mrn") in new_mrns) if new_mrns or delta.get("computed") else r["new"]
+    for r in ordered:  # OVERLAY_6 4c/4l: (new) only on the first day, unless today's email says (new); re-cs is never (new)
+        if "re-cs" in r["tags"]:
+            r["new"] = False
+        elif (reg.p[r["pid"]].get("first_seen") or today) < today and "new" not in r["tags"]:
+            r["new"] = False
     out_census["patients"] = [{k: v for k, v in r.items() if k not in ("ward_rows", "ams_block")} for r in ordered]
+    out_census["cs_id_offlist"] = [{k: v for k, v in o.items() if k != "row"} for o in cs_offlist]
     jdump(out_census, os.path.join(a.out, "census.json"))
     jdump(delta, os.path.join(a.out, "delta.json"))
     jdump({r["pid"]: r["ward_rows"] for r in ordered}, os.path.join(a.out, "ward_rows.json"))
@@ -408,6 +501,16 @@ def main():
             if prev.get("log_im"): L.append("  log_im: " + prev["log_im"])
             if prev.get("log_id"): L.append("  log_id: " + prev["log_id"])
         L.append("")
+    for o in cs_offlist:
+        L.append("=== OFFLIST %s | %s | %s | off the ID list since %s | still ID consulted or UC ID in the %s doc -> SIGNED_OFF one-liner only"
+                 % (o["pid"], o["room"], o["name"], o.get("archived"), o.get("doc")))
+        for cell in ("HDR", "ACTIVE", "ABX", "PENDINGS", "SYNTHESIS"):
+            if o["row"].get("cells", {}).get(cell):
+                L.append("[%s] %s" % (cell, o["row"]["cells"][cell]))
+        prev0 = reg.p[o["pid"]].get("synth") or {}
+        if prev0.get("one_liner"):
+            L.append("--- last entry: " + prev0["one_liner"])
+        L.append("")
     open(os.path.join(a.out, "packets.txt"), "w", encoding="utf-8").write("\n".join(L))
     print("census %d (new %d, orphans %d, archived today %d, single-dose shots %d), roster=%s, AS list=%s, wards rows=%s, AMS blocks=%s, delta_computed=%s, flags=%d, pending checks=%d, cold=%s" % (
         len(ordered), sum(r["new"] for r in ordered), sum(r["orphan"] for r in ordered), len(archived_today), len(single_dose),
@@ -438,7 +541,26 @@ def main():
         print("   for f in floors icu cardio neuro; do grep -ci '<surname>' in/$f.json; done")
         print("Re-run with --allow-orphans once the parse is confirmed sound.")
         if not a.allow_orphans:
-            sys.exit(2)
+            # OVERLAY_6 4q: grep the ward JSONs for each orphan's surname instead of all-or-nothing.
+            wd = os.path.dirname(os.path.abspath(a.wards))
+            blobs = [open(os.path.join(wd, f + ".json"), encoding="utf-8", errors="ignore").read().lower()
+                     for f in ("floors", "icu", "cardio", "neuro") if os.path.exists(os.path.join(wd, f + ".json"))]
+            conf = set()
+            if a.orphans_confirmed and os.path.exists(a.orphans_confirmed):
+                conf = {norm_name(l) for l in open(a.orphans_confirmed, encoding="utf-8") if l.strip()}
+            unconfirmed = []
+            for r in orphans:
+                toks = [t for t in re.findall(r"[a-z]+", r["name"].lower()) if len(t) > 3]
+                sur = toks[-1] if toks else ""
+                hits = sum(b.count(sur) for b in blobs) if sur else -1
+                ok = norm_name(r["name"]) in conf or (blobs and sur and hits == 0)
+                print("   grep %-14s %s in %d ward docs: %s" % (sur or "?", hits, len(blobs), "absent, confirmed" if ok else "PRESENT or unchecked"))
+                if not ok:
+                    unconfirmed.append(r["name"])
+            if unconfirmed:
+                print("orphan guard: %d orphan(s) not confirmed absent: %s" % (len(unconfirmed), ", ".join(unconfirmed)))
+                sys.exit(2)
+            print("orphan guard: all %d orphans confirmed absent by grep or --orphans-confirmed; proceeding" % len(orphans))
     else:
         print("orphan guard: %d/%d orphans, %d ward rows, no jump vs last run"
               % (len(orphans), len(ordered), nrows))

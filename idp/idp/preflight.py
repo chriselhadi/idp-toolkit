@@ -75,8 +75,9 @@ def main():
             check(first.startswith("IDP-STATE %s part %d/%d sha256=%s" % (today, p["n"], s["n"], s["full_sha256"])),
                   "state part %d header" % p["n"])
     an = rd("archive_notes.txt")
-    print("INFO archive_notes.txt: %s" % ("SKIP email 4, file empty" if not (an and an.strip()) else "%d chars, send email 4" % len(an)))
-    print("INFO recipient for every send: chriselhadi@gmail.com and nobody else")
+    print("INFO archive_notes.txt: %s" % ("empty, nothing to upload" if not (an and an.strip()) else
+          "%d chars: archive_split.py, then upload to ID_Archive_Notes; do NOT email (P2)" % len(an)))  # OVERLAY_6 4u
+    print("INFO recipients for delta, handout, recap (no archive email, P2): chriselhadi@gmail.com, jounblat96@gmail.com, mariana.elakhrass9666@gmail.com; state goes to Drive only")
     if fails:
         print("PREFLIGHT FAILED: %d check(s)" % len(fails)); sys.exit(1)
     print("PREFLIGHT OK")

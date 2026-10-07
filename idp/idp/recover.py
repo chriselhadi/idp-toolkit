@@ -90,10 +90,15 @@ def main(argv):
             for b in iter_results(p):
                 if ('"id":"%s"' % key in b or '"id": "%s"' % key in b) and '"raw"' in b:
                     body = b
-        if body is None:
-            print("recover: no RAW result for message", key); return 1
+        if body is None:  # OVERLAY_6 4h
+            print("recover: no RAW result for message %s in the transcript. If get_message ran before a context "
+                  "compaction its result is gone: fetch again with get_message (messageFormat RAW), then re-run." % key); return 1
         start = body.find("{")
-        obj = json.loads(body[start:body.rfind("}") + 1])
+        try:
+            obj = json.loads(body[start:body.rfind("}") + 1])
+        except ValueError:
+            print("recover: the RAW result for %s is truncated or summarised (context compaction?): fetch again with "
+                  "get_message (messageFormat RAW), then re-run." % key); return 1
         json.dump(obj, open(out, "w", encoding="utf-8"))
         print("recovered RAW for", key, "raw chars", len(obj.get("raw", "")), "->", out); return 0
     print(__doc__); return 2

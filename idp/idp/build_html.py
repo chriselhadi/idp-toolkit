@@ -21,10 +21,28 @@ from common import WARD_ORDER, jload
 # Shading goes through the bgcolor attribute: Gmail strips "background:" from inline styles.
 TD = "border:1px solid #808080;padding:2px 4px;vertical-align:top;text-align:left"
 
-KEYS = ("Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ")
+KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ")
 
 
 INK, MUTED, LINE, GREY, WHITE = "#141414", "#5f5f5f", "#dcdcdc", "#f0f0f0", "#ffffff"
+RED, BLUE, UCBG, UCBAR = "#c00000", "#1f4ed8", "#e8f0fb", "#1f4e9e"
+import re as _re
+OPEN_SEG = _re.compile(r"(\d{2}/\d{2}|\?)-(?=[\s,]|$)")
+TODAY_DDMM = [""]
+
+
+def drug_html(txt):
+    """One drug: struck through when every segment is closed, blue when ID's
+    previous-day recommendation was not applied (Chris, 28.09.2026)."""
+    core = txt.split(" [ID rec not applied")[0]
+    x1 = _re.search(r"\bx1 ~?(\d{2}/\d{2})", core)
+    running = bool(OPEN_SEG.search(core)) or bool(x1 and x1.group(1) == TODAY_DDMM[0])
+    h = escape(txt)
+    if not running:
+        h = "<s>%s</s>" % h
+    if "[ID rec not applied" in txt:
+        h = '<span style="color:%s;font-weight:700">%s</span>' % (BLUE, h)
+    return h
 
 
 def patient_html(p):
@@ -37,7 +55,12 @@ def patient_html(p):
         elif i == 1 and not line.startswith(KEYS):
             out.append('<div style="font-size:13px;color:%s;margin:2px 0 4px 0">%s</div>' % (MUTED, escape(line)))
         elif line.startswith("   "):
-            out.append('<div style="padding-left:16px">%s</div>' % escape(line.strip()))
+            out.append('<div style="padding-left:16px">%s</div>' % drug_html(line.strip()))
+        elif line.startswith("Abx (unlinked): "):
+            out.append('<div style="margin-top:3px"><span style="color:%s">Abx (unlinked): </span>%s</div>'
+                       % (MUTED, "; ".join(drug_html(x) for x in line[len("Abx (unlinked): "):].split("; "))))
+        elif line.startswith("Conflict: "):
+            out.append('<div style="margin-top:4px;color:%s;font-weight:700">Conflict: %s</div>' % (RED, escape(line[len("Conflict: "):])))
         else:
             for key in KEYS:
                 if line.startswith(key):
@@ -47,6 +70,9 @@ def patient_html(p):
             else:
                 head, sep, rest = line.partition(" | ")
                 out.append('<div style="margin-top:4px"><b>%s</b>%s</div>' % (escape(head), escape(sep + rest)))
+    if p.get("uc"):
+        return ('<div bgcolor="%s" style="padding:10px 8px;border-left:5px solid %s;border-bottom:1px solid %s;font-size:14px;line-height:1.4;color:%s">%s</div>'
+                % (UCBG, UCBAR, LINE, INK, "".join(out)))
     return ('<div bgcolor="%s" style="padding:10px 8px;border-bottom:1px solid %s;font-size:14px;line-height:1.4;color:%s">%s</div>'
             % (GREY if p.get("new") else WHITE, LINE, INK, "".join(out)))
 
@@ -54,7 +80,8 @@ def patient_html(p):
 SPLIT_OVER = 55000   # one tool call transcribes ~50 K safely (14.09.2026); above this, two emails by ward group
 
 
-def build(render, date_label, groups=None, label=""):
+def build(render, date_label, groups=None, label="", offlist=True):
+    TODAY_DDMM[0] = "%s/%s" % (render["date"][8:10], render["date"][5:7]) if render.get("date") else ""
     ttl = "ID Daily Handout%s" % ((" (%s)" % label) if label else "")
     H = ['<div style="margin:0;padding:8px 4px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif">',
          '<div style="font-size:18px;font-weight:700;color:%s">%s</div>' % (INK, escape(ttl)),
@@ -76,10 +103,23 @@ def build(render, date_label, groups=None, label=""):
             T.extend(p["lines_docx"]); T.append("")
             n += 1
         H.append("</div>")
+    so = render.get("signed_off") or []
+    if offlist and so:
+        H.append('<div style="font-size:13px;font-weight:700;color:%s;margin:18px 0 4px 0;letter-spacing:.06em;text-transform:uppercase">'
+                 'Off the ID list, still ID consulted in handoffs <span style="color:%s;font-weight:400">(%d)</span></div><div style="border-top:1px solid %s">'
+                 % (INK, MUTED, len(so), INK))
+        T.append("OFF THE ID LIST, STILL ID CONSULTED IN HANDOFFS (%d)" % len(so)); T.append("")
+        for o in so:
+            H.append('<div bgcolor="%s" style="padding:8px;border-bottom:1px solid %s;font-size:14px;line-height:1.4;color:%s"><b>%s %s</b>: %s</div>'
+                     % (WHITE, LINE, INK, escape(o["room"]), escape(o["name"]), escape(o["line"])))
+            T.append("%s %s: %s" % (o["room"], o["name"], o["line"]))
+        H.append("</div>"); T.append("")
     sub = "%s<br>%d patients" % (escape(date_label), n)
     H[2] = '<div style="font-size:13px;color:%s;margin:4px 0 0 0;line-height:1.4">%s</div>' % (MUTED, sub)
     T[1] = "%s | %d patients" % (date_label, n)
     H.append('<div style="font-size:11px;color:%s;margin:18px 0 0 0;line-height:1.4">Grey card = new to service. '
+             "Blue-edged card = UC, under our care. Struck drug = stopped. Blue drug = our previous-day recommendation not applied. "
+             "Red = conflict between handoffs, AS list or AMS sheet. "
              "D&lt;n&gt; on a drug line = computed days on drug; ~ = start known only from the AS list; "
              "d&lt;n&gt; on a pending = days outstanding.</div></div>" % MUTED)
     return "\n".join(H) + "\n", "\n".join(T).rstrip() + "\n", n
@@ -108,7 +148,7 @@ def main():
         parts = []
         for i, grp in enumerate((first, second), 1):
             lab = "part %d of 2" % i
-            h, t, k = build(render, date_label, grp, lab)
+            h, t, k = build(render, date_label, grp, lab, offlist=(i == 2))
             fn = "handout_part%d.html" % i
             open(os.path.join(out, fn), "w", encoding="utf-8").write(h)
             parts.append({"file": fn, "subject": "ID Daily Handout - %s (%s)" % (date_label, lab), "chars": len(h),

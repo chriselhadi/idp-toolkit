@@ -24,7 +24,8 @@ def main():
     status.append("| ID Active Patients email %s" % ("received" if census.get("roster_sent") else "not received today"))
     status.append("| census %d" % len(pats))
     if delta.get("computed"):
-        c = delta["counts"]; status.append("| delta: %d new, %d off, %d changed" % (c["new"], c["off"], c["changed"]))
+        c = delta["counts"]; status.append("| delta: %d new, %d off, %d changed" % (c["new"], c["off"], sum(
+            1 for x in delta.get("changes", []) if x.get("started") or x.get("stopped"))))  # OVERLAY_6 4x: as rendered
     else:
         status.append("| delta not computed (%s)" % delta.get("reason", "no AS list"))
     if census.get("cold"): status.append("| state rebuilt cold")

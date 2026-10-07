@@ -70,6 +70,27 @@ def load_text(path):
     return txt
 
 
+ATTENDINGS = r"(mou?g?h?nieh|moghnieh|husni|husny|barhoun|mokhbat)"
+
+
+def uc_is_id(uc, head):
+    """UC ID / UC <attending> / under care of an ID attending (Chris, 28.09.2026)."""
+    if re.search(r"\bUC\s*(?:of\s*|by\s*)?(?:Dr\.?\s*)?(?:ID\b|infectious|" + ATTENDINGS + ")", head, re.I):
+        return True
+    if re.search(ATTENDINGS, uc or "", re.I):
+        return True
+    return bool(re.search(r"under (?:the )?care of (?:Dr\.?\s*)?(?:ID\b|" + ATTENDINGS + ")", head, re.I))
+
+
+def id_consulted(head, consults):
+    """Cs ID / CS ID / Cs Dr <attending> / ID consulted."""
+    if re.search(r"\bC[sS]\.?\s*(?:ID\b|infectious|(?:Dr\.?\s*)?" + ATTENDINGS + ")", head, re.I):
+        return True
+    if re.search(r"\bID (?:was )?consulted\b", head, re.I):
+        return True
+    return any(re.search(r"^(?:ID\b|infectious|(?:Dr\.?\s*)?" + ATTENDINGS + ")", c, re.I) for c in consults)
+
+
 SKIP_TOKEN = re.compile(r"^(DOA|UC\b|Cs\b|CS\b|Weight|Allerg|Foley|NG\b|Lines|Code|NKFDA|NKDA|Old ICU|New ICU|ICU|Icu|CSU|SCT|Patient X|DNI|DNR|Full code|N/A|Dr\.?\s|Day|Phase)", re.I)
 
 
@@ -154,7 +175,7 @@ def parse_rows(text, doc):
             if DATE_RE.search(seg) and len(seg.strip()) > 8:
                 dated.append(seg.strip()[:300])
         rows.append({"doc": doc, "section": cur_sec, "room": room, "group": grp, "name": name, "doa": doa,
-                     "uc": uc.group(1).strip() if uc else "", "consults": consults[:6], "id_consult": bool(re.search(r"\bC[sS]\s+ID\b", head)),
+                     "uc": uc.group(1).strip() if uc else "", "consults": consults[:6], "id_consult": id_consulted(head, consults), "uc_id": uc_is_id(uc.group(1) if uc else "", head),
                      "cells": c, "text": text_all[:8000], "dated_lines": dated[-15:]})
     return rows
 

@@ -106,6 +106,16 @@ def main():
                                           ("now on", regimen(bym[c["mrn"]]))])
               for c in sorted(real_changes, key=lambda x: x["room"] or "")]
 
+    # Patients still on restricted abx with the regimen unchanged since the last list (Chris, 29.09.2026).
+    moved_mrns = {c["mrn"] for c in real_changes} | {p["mrn"] for p in d["new"]}
+    unchanged = sorted([p for p in t["patients"] if p.get("mrn") not in moved_mrns and regimen(p) != "-"],
+                       key=lambda x: x.get("room") or "")
+    uhtml = ('<div style="font-size:13px;font-weight:700;color:%s;margin:18px 0 4px 0;letter-spacing:.06em;text-transform:uppercase">'
+             'Unchanged, still on restricted abx <span style="color:%s;font-weight:400">(%d)</span></div>'
+             '<div style="border-top:1px solid %s;padding:6px 8px;font-size:14px;line-height:1.5;color:%s">%s</div>'
+             % (INK, MUTED, len(unchanged), INK, INK,
+                "<br>".join("%s %s: %s" % (html.escape(p.get("room") or "?"), html.escape(tc(p["name"])), html.escape(regimen(p)))
+                            for p in unchanged) or "None."))
     ct = d["counts"]
     dmy = lambda iso: ".".join(reversed(iso.split("-")))
     missed = d.get("missed_dates") or []
@@ -131,7 +141,7 @@ def main():
         % (INK, MUTED, meta,
            section("New on list", ct["new"], ncards),
            section("Off list", ct["off"], ocards),
-           section("Changes", len(real_changes), ccards),
+           section("Changes", len(real_changes), ccards) + uhtml,
            MUTED))
 
     # Gmail must not be able to strip meaning out of this report.
@@ -168,6 +178,8 @@ def main():
                        ("now on", regimen(bym[c["mrn"]]))))
     if not real_changes:
         L.append("  None.")
+    L += ["", "UNCHANGED, STILL ON RESTRICTED ABX (%d)" % len(unchanged), ""]
+    L += ["%s %s: %s" % (p.get("room") or "?", tc(p["name"]), regimen(p)) for p in unchanged] or ["  None."]
     L += ["", "NEW TO SERVICE = new on today's list with no ward handoff row, or named as a new patient in the daily update."]
     txt = "\n".join(L)
     assert "—" not in txt and "–" not in txt, "dash in output"

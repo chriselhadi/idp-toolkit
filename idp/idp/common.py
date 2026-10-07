@@ -64,6 +64,9 @@ def parse_bed(bed):
     m = re.match(r"^B?NICU(\d*)([A-Z]?)$", b)
     if m:
         return ("NICU%s%s" % (m.group(1), m.group(2)), "Paeds", ["paeds"])
+    m = re.match(r"^B?CCU(\d*)([A-Z]?)$", b)  # OVERLAY_7: CCU is a unit, grouped with CSU
+    if m:
+        return ("CCU%s%s" % (m.group(1), m.group(2)), "ICU#D", [])
     m = re.match(r"^B?CSU(\d+)([A-Z]?)$", b)
     if m:
         return ("CSU%s%s" % (m.group(1), m.group(2)), "ICU#D", [])
@@ -110,6 +113,59 @@ def name_tokens(name):
     return set(norm_name(name).split())
 
 
+# OVERLAY_6 4o (07.10.2026): one key for Arabic transliteration variants of a name token
+# (Raniya/Rania, Haddadi/Haddady, Yusuf/Yousuf).
+def translit_key(t):
+    t = (t or "").lower()
+    if len(t) > 3:
+        t = re.sub(r"(iyeh|iyah|ieh|iya|yah|ya|ia|eh|ah|ee|y|i|e)$", "a", t)
+    for a, b in (("ou", "u"), ("oo", "u"), ("ee", "i"), ("ei", "i"), ("ey", "i"), ("ie", "i"), ("y", "i"),
+                 ("q", "k"), ("ck", "k"), ("ph", "f")):
+        t = t.replace(a, b)
+    return re.sub(r"(.)\1+", r"\1", t)
+
+
+# OVERLAY_6 4a (07.10.2026): frequencies only, never a dose, anywhere.
+_DRUGS = (r"lovenox|enoxaparin|clexane|heparin|lantus|insulin|novorapid|methylpred\w*|solu-?medrol|hydrocortisone|"
+          r"dexa\w*|prednis\w*|pred|lasix|furosemide|tava\w*|levo\w*|mero\w*|vanco\w*|fluco\w*|teico\w*|cefaz\w*|"
+          r"ceftri\w*|cefe\w*|piptazo|tazocin|pip|erta\w*|fosfo\w*|amik\w*|colist\w*|acyclo\w*|valacyclo\w*|vori\w*|"
+          r"caspo\w*|mica\w*|metro\w*|cipro\w*|augmentin|bactrim|doxy\w*|azithro\w*|clinda\w*|linezolid|dapto\w*|"
+          r"genta\w*|zavi\w*|terbin\w*|apixaban|eliquis|rivaroxaban|xarelto|keppra|levetiracetam")
+DOSE_RE = re.compile(
+    r"\b\d+(?:[.,]\d+)?\s?(?:mg|g|gr|mcg|\u00b5g|ug|IU|MU|units?|mL/kg|mg/kg)\b(?!/dL)"
+    r"|\b\d{3,4}\s?(?:x1|once|OD|BID|TID|q\d+h)\b|\bloading dose of\s*\d|\(\s*\d{3,4}\b(?![,.]\d)"
+    r"|\b\d{3,4}\s+(?:proph|from|then|load|daily|once)\b|\bthen \d{2,4}\b(?!\s*(?:col|/))"
+    r"|\b(?:" + _DRUGS + r")\s+\d{1,4}(?:[.,]\d+)?(?:\s?(?:mg|g|mcg|ug|units?|IU|MU)\b)?(?![\w.,])(?!\s*(?:/|%|h\b|hours?|days?|d\b|wks?\b|weeks?|w\b|months?|mo\b|times|doses|col|x10|mmol|cells))", re.I)
+_LAB_CTX = re.compile(r"\b(Hb|Hgb|CRP|PCT|Cr|WBC|Plt|lactate|glucose|protein|bili|Na|K|EF|HGT|ANC|col/ml|CrCl|trough|level)\b", re.I)
+
+
+def find_doses(text):
+    """Dose mentions in text, lab values excluded (a lab name in the 45 chars before the hit)."""
+    out = []
+    for m in DOSE_RE.finditer(text or ""):
+        if _LAB_CTX.search(text[max(0, m.start() - 45):m.start() + 1]):
+            continue
+        out.append(m.group(0))
+    return out
+
+
+def strip_doses(text):
+    """Remove dose figures, keep the drug, route, frequency and dates. Line structure kept."""
+    def one(line):
+        if not find_doses(line):
+            return line
+        s = line
+        for d in find_doses(line):
+            m = re.match(r"^((?:" + _DRUGS + r")\s+)(.*)$", d, re.I)
+            w = re.match(r"^\d+\s+(\w+)$", d) or re.match(r"^(then|\() ?\d+$", d)
+            s = s.replace(d, m.group(1).rstrip() if m else (w.group(1) if w else ""), 1)
+        s = re.sub(r"\(\s*\)", "", s)
+        s = re.sub(r"\(\s+", "(", s)
+        lead = re.match(r"^\s*", s).group(0)
+        return lead + re.sub(r" {2,}", " ", s[len(lead):]).rstrip()
+    return "\n".join(one(l) for l in (text or "").split("\n"))
+
+
 def name_sim(a, b):
     """Fuzzy Jaccard on name tokens: tokens match when equal, or when one is a prefix of the other (>=4 chars),
     or when difflib ratio >= 0.8 (transliteration variants). Particles like el/al/abou are ignored."""
@@ -123,7 +179,8 @@ def name_sim(a, b):
         for j, y in enumerate(B):
             if j in used:
                 continue
-            if x == y or (len(x) >= 4 and len(y) >= 4 and (x.startswith(y) or y.startswith(x))) or difflib.SequenceMatcher(None, x, y).ratio() >= 0.8:
+            if x == y or (len(x) >= 4 and len(y) >= 4 and (x.startswith(y) or y.startswith(x))) or difflib.SequenceMatcher(None, x, y).ratio() >= 0.8 \
+                    or (len(x) >= 4 and len(y) >= 4 and translit_key(x) == translit_key(y)):  # OVERLAY_6 4o
                 used.add(j); hits += 1; break
     return hits / (len(A) + len(B) - hits)
 

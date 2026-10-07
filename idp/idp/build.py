@@ -68,7 +68,8 @@ def main():
     # commentary, and no Flags block (house style; "Flags: none" used to be appended
     # here and was itself a house-style breach). recap_concise.txt is still written by
     # render.py but only backs the DOCX now; it is not sent.
-    # Email 4 is out/archive_notes.txt, written above by state_io.py finalize. It is its
+    # OVERLAY_6 4u: archive notes are NOT emailed since 03.10.2026 (P2); they go to ID_Archive_Notes.
+    # Email 4 was out/archive_notes.txt, written above by state_io.py finalize. It is its
     # own email and is NOT appended here: the two together exceed the size at which the
     # recap would have to be split, and the recap must stay one email. Skip email 4 when
     # the file is empty, which is most mornings.

@@ -18,8 +18,8 @@ body (no attachment ever again), compact recap, delta baseline = last SENT delta
    arrived with every word intact the same morning. Never send a DOCX again.
 3. **ID Daily Recap** - body is `out/recap_email.txt` (`render_wa.py`, compact form).
    Plain text, ONE email, about 14,000 chars for a 17-patient census. Do not split it.
-4. **Archive notes** - body is `out/archive_notes.txt`, subject `ID handoff <dd.mm.yyyy>
-   archive notes`. Plain text, ONE email. **Skip this email entirely when the file is empty**,
+4. **Archive notes: NO EMAIL (amendment P2, 03.10.2026).** `out/archive_notes.txt` is split with
+   `archive_split.py` and each note is uploaded to the ID_Archive_Notes Drive folder. Never email it. The old rule was: skip it when the file is empty,
    which is the common case: most mornings nobody has left the service. Never send an empty
    or header-only archive email.
 
@@ -131,7 +131,8 @@ the gap is reported on the next day that has a list.
 who has left the service, emitted ONCE, on the first morning they are absent from the AS
 list and all four ward docs.
 
-It goes as its own email, number 4, decided by Chris 10.09.2026. It used to be specified as
+Since 03.10.2026 (amendment P2) it is NOT emailed: archive_split.py splits it and each note goes to the
+ID_Archive_Notes Drive folder. Until then it went as its own email, number 4, decided by Chris 10.09.2026. It used to be specified as
 a section at the end of the recap, but the two together run to about 38500 chars on a normal
 day and the recap alone is already 25000, so appending it forces a split of the one email
 that must not be split. A separate email also keeps the sealing work in one place: this is
@@ -201,3 +202,7 @@ UCx, BCx, cx, neg, pos, R/L, wk, d. Drop articles and hedges. "CTA 26/08 loculat
 bilateral effusions, new RLL/RML consolidation" not "pan CTA on 26/08 showed large
 loculated right and large left pleural effusions with new right lower and middle lobe
 consolidation".
+
+## Amendments O to T (07.10.2026)
+
+The run follows IDP_amendments_NO.txt in the Drive overlay folder (O second AMS workbook, P ID list first and no archive email, Q overlay 4 and membership, R overlay 5, S strict rules and checks_R.py, T overlays 6 and 7 and the helper scripts). It overrides this file where they conflict. It stays on Drive because it names patients.
