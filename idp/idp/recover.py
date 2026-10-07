@@ -7,7 +7,7 @@ Usage:
   recover.py --spill <path> <out>                copy a spilled tool-result file (no-op convenience)
 Exit 1 with a message when nothing matches.
 """
-import sys, os, glob, json
+import sys, os, glob, json, re
 
 
 def transcript_paths():
@@ -47,13 +47,28 @@ def iter_results(path):
                 yield json.dumps(tur)
 
 
+def owns(body, needle):
+    """True when the result itself is the file named by `needle`: its top-level id equals it or its
+    viewUrl carries it. Drive docs link to each other, so a fileId inside the text is not enough
+    (27.09.2026: the ICU doc links the neuro doc, and --needle <ICU id> returned the neuro doc)."""
+    try:
+        o = json.loads(body[body.find("{"):body.rfind("}") + 1])
+    except Exception:
+        return False
+    return isinstance(o, dict) and (o.get("id") == needle or "/d/%s/" % needle in (o.get("viewUrl") or ""))
+
+
 def find(needle):
-    best = None
+    best = own = None
     for p in transcript_paths():
         for body in iter_results(p):
             if needle in body:
                 best = body
-    return best
+                if owns(body, needle):
+                    own = body
+    if own is None and best is not None and re.fullmatch(r"[A-Za-z0-9_-]{25,}", needle):
+        print("recover: WARNING no result is itself file %s; returning the last one that mentions it, check its title" % needle)
+    return own or best
 
 
 def main(argv):

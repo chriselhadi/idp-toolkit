@@ -103,6 +103,16 @@ def ward_lookup(wards, name, room):
         ru = room.upper()
         if any(h[1].get("room") and h[1]["room"].upper() == ru for h in hits):
             hits = [h for h in hits if not (h[1].get("room") and h[1]["room"].upper() not in (ru, "?"))]
+    # A second-doc row (cardio/neuro) with no room to confirm it and a different admission date
+    # from the owning floors/ICU row is another patient with a similar name (27.09.2026: a
+    # cardiology bigeminy row, DOA 26/09, attached to a 709B patient admitted 24/09). Near-exact
+    # names (>= 0.8) are kept.
+    own_doa = {h[1]["doa"] for h in hits if h[1].get("doc") in ("floors", "icu") and h[1].get("doa")}
+    if own_doa:
+        ru = (room or "").upper()
+        hits = [h for h in hits if h[1].get("doc") in ("floors", "icu") or h[0] >= 0.8
+                or not h[1].get("doa") or h[1]["doa"] in own_doa
+                or (ru and (h[1].get("room") or "").upper() == ru)]
     hits.sort(key=lambda h: (-(h[1].get("doc") in ("floors", "icu")), -h[0]))
     return [h[1] for h in hits]
 
