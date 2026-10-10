@@ -4,13 +4,15 @@
     python3 export.py <run dir> --date YYYY-MM-DD [--out out/export]
 
 Reads from <run dir>/out: state_new.json, census.json, delta.json, run_status.txt, flags.txt, verification.json
-(optional), cultures.json (optional, from cultures.py). Writes to --out (default <run dir>/out/export):
+(optional), ams_check.json (optional, from ams_check.py: the link to each patient's AMS-sheet entry and the
+comparison with it), cultures.json (optional). Writes to --out (default <run dir>/out/export):
 
   IDP Dashboard <date>.json   one file per day, everything the app shows (census in round order, structured issues,
                               antimicrobial courses with day counts, cultures, pendings with ages, computed changes,
                               verification findings, delta, signed-off block)
   tables/<table> <date>.csv   one row per fact, keyed by pid, identical columns every day (see DATA_DICTIONARY.md):
-                              patient_days, abx_courses, abx_segments, micro, issues, pendings, verification
+                              patient_days, abx_courses, abx_segments, micro, issues, pendings, verification,
+                              ams_courses, ams_cultures (the AMS sheet's own rows for each census patient)
   tables/identifiers <date>.csv   pid -> MRN, name, aliases. Kept apart so the other tables can be shared
                               pseudonymised by leaving this one out.
 
@@ -27,13 +29,14 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datamodel import patient_record  # noqa: E402
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 1  # additive fields (ams) keep schema 1: readers ignore what they do not know
 WARD_ORDER = ["7th floor", "ICU#B", "4th floor", "ICU#D", "3rd floor", "2nd floor", "SCT", "CCU/CSU", "ER IN", "Paeds"]
 
 TABLES = {
     "patient_days": ["date", "pid", "active", "new", "uc", "room", "ward_group", "fellow", "tags", "n_issues",
                      "n_running_abx", "n_micro", "n_pendings", "fever", "pressors", "resp", "one_liner",
-                     "first_seen", "days_on_service"],
+                     "first_seen", "days_on_service", "ams_sheet", "ams_first_row", "ams_last_row",
+                     "ams_finalised"],
     "abx_courses": ["date", "pid", "drug", "route", "freq", "issue", "running", "start", "start_approx", "stop",
                     "days", "n_segments", "note", "line"],
     "abx_segments": ["date", "pid", "drug", "seg", "start", "start_approx", "end", "end_approx", "open", "single",
@@ -42,7 +45,11 @@ TABLES = {
     "issues": ["date", "pid", "rank", "dx", "onset", "onset_text", "facts", "status", "n_abx"],
     "pendings": ["date", "pid", "item", "since", "age_days", "gate", "text"],
     "verification": ["date", "id", "severity", "code", "pid", "key", "message", "acknowledged"],
-    "identifiers": ["date", "pid", "mrn", "name", "aliases", "first_seen", "last_seen", "archived"],
+    "ams_courses": ["date", "pid", "ams_sheet", "ams_row", "drug", "drug_key", "indication", "start", "end", "ongoing"],
+    "ams_cultures": ["date", "pid", "ams_sheet", "ams_row", "collected", "specimen_family", "text", "status",
+                     "organism", "ast", "positive"],
+    "identifiers": ["date", "pid", "mrn", "name", "aliases", "first_seen", "last_seen", "archived", "ams_sheet",
+                    "ams_first_row", "ams_name", "ams_mrn"],
 }
 
 
@@ -78,11 +85,14 @@ def build(run_dir, date):
     delta = load(os.path.join(o, "delta.json"), {}) or {}
     ver = load(os.path.join(o, "verification.json"), {}) or {}
     cultures = load(os.path.join(o, "cultures.json"), None)
+    ams = load(os.path.join(o, "ams_check.json"), {}) or {}
+    ams_entries = ams.get("patients") or {}
+    ams_findings = ams.get("findings") or []
     render = load(os.path.join(o, "render.json"), {}) or {}
 
     cpat = {p["pid"]: p for p in census.get("patients") or []}
     recs = {pid: patient_record(pid, r, ref) for pid, r in (state.get("patients") or {}).items()}
-    findings = ver.get("findings") or []
+    findings = (ver.get("findings") or []) + ams_findings
     changes = ver.get("changes") or {}
 
     patients = []
@@ -105,6 +115,9 @@ def build(run_dir, date):
         r["findings"] = [f for f in findings if f.get("pid") == pid]
         r["changes"] = changes.get(pid, [])
         r["days_on_service"] = (ref - dt.date.fromisoformat(r["first_seen"])).days + 1 if r["first_seen"] else None
+        e = ams_entries.get(pid)
+        r["ams"] = ({k: e[k] for k in ("sheet", "first_row", "last_row", "finalised", "courses", "cultures")}
+                    if e else None)
         patients.append(r)
     patients.sort(key=lambda p: (ward_rank(p["group"]), p["room"] or "", p["name"]))
 
@@ -118,20 +131,26 @@ def build(run_dir, date):
                    "pendings": sum(len(p["pendings"]) for p in patients),
                    "errors": (ver.get("counts") or {}).get("ERROR", 0),
                    "blocking": (ver.get("counts") or {}).get("blocking", 0),
-                   "warnings": (ver.get("counts") or {}).get("WARN", 0)},
+                   "warnings": (ver.get("counts") or {}).get("WARN", 0),
+                   "ams_linked": sum(1 for p in patients if p.get("ams")),
+                   "ams_review": sum(1 for f in ams_findings if f.get("severity") == "WARN")},
         "ward_order": WARD_ORDER,
         "patients": patients,
         "signed_off": render.get("signed_off") or [],
         "archived_today": census.get("archived_today") or [],
         "delta": delta,
         "verification": {"counts": ver.get("counts") or {}, "findings": [f for f in findings if not f.get("pid")]},
+        "ams": {"sheets": ams.get("sheets") or [], "entries": ams.get("entries", 0), "checked": bool(ams)},
         "cultures": {"files": (cultures or {}).get("files") or [], "off_census": (cultures or {}).get("off_census") or []},
     }
 
     T = {k: [] for k in TABLES}
     for pid, r in recs.items():
+        e = ams_entries.get(pid) or {}
         T["identifiers"].append({"date": date, "pid": pid, "mrn": r["mrn"], "name": r["name"], "aliases": r["aliases"],
-                                 "first_seen": r["first_seen"], "last_seen": r["last_seen"], "archived": r["archived"]})
+                                 "first_seen": r["first_seen"], "last_seen": r["last_seen"], "archived": r["archived"],
+                                 "ams_sheet": e.get("sheet", ""), "ams_first_row": e.get("first_row", ""),
+                                 "ams_name": e.get("name", ""), "ams_mrn": e.get("mrn", "")})
     for p in patients:
         pid = p["pid"]
         T["patient_days"].append({
@@ -140,7 +159,18 @@ def build(run_dir, date):
             "n_running_abx": sum(1 for c in p["courses"] if c["running"]), "n_micro": len(p["micro"]),
             "n_pendings": len(p["pendings"]), "fever": p["status"]["fever"], "pressors": p["status"]["pressors"],
             "resp": p["status"]["resp"], "one_liner": p["one_liner"], "first_seen": p["first_seen"],
-            "days_on_service": p["days_on_service"]})
+            "days_on_service": p["days_on_service"], "ams_sheet": (p["ams"] or {}).get("sheet", ""),
+            "ams_first_row": (p["ams"] or {}).get("first_row", ""), "ams_last_row": (p["ams"] or {}).get("last_row", ""),
+            "ams_finalised": int(bool((p["ams"] or {}).get("finalised")))})
+        for c in (p["ams"] or {}).get("courses", []):
+            T["ams_courses"].append({"date": date, "pid": pid, "ams_sheet": p["ams"]["sheet"], "ams_row": c["row"],
+                                     "drug": c["drug"], "drug_key": c["canon"], "indication": c["indication"],
+                                     "start": c["start"], "end": c["end"], "ongoing": int(c["ongoing"])})
+        for c in (p["ams"] or {}).get("cultures", []):
+            T["ams_cultures"].append({"date": date, "pid": pid, "ams_sheet": p["ams"]["sheet"], "ams_row": c["row"],
+                                      "collected": c["date"], "specimen_family": c["family"], "text": c["text"],
+                                      "status": c["status"], "organism": c["organism"], "ast": c["ast"],
+                                      "positive": int(c["positive"])})
         for c in p["courses"]:
             T["abx_courses"].append({"date": date, "pid": pid, **{k: c[k] for k in ("drug", "route", "freq", "issue",
                                      "running", "start", "start_approx", "stop", "days", "note", "line")},
