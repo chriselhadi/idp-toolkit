@@ -25,7 +25,7 @@ KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", 
 
 
 INK, MUTED, LINE, GREY, WHITE = "#141414", "#5f5f5f", "#dcdcdc", "#f0f0f0", "#ffffff"
-RED, BLUE, UCBG, UCBAR = "#c00000", "#1f4ed8", "#e8f0fb", "#1f4e9e"
+RED, BLUE, UCBG, UCBAR = "#141414", "#141414", "#f7f7f7", "#5f5f5f"  # OVERLAY_8 D3: greyscale only
 import re as _re
 OPEN_SEG = _re.compile(r"(\d{2}/\d{2}|\?)-(?=[\s,]|$)")
 TODAY_DDMM = [""]
@@ -106,9 +106,9 @@ def build(render, date_label, groups=None, label="", offlist=True):
     so = render.get("signed_off") or []
     if offlist and so:
         H.append('<div style="font-size:13px;font-weight:700;color:%s;margin:18px 0 4px 0;letter-spacing:.06em;text-transform:uppercase">'
-                 'Off the ID list, still ID consulted in handoffs <span style="color:%s;font-weight:400">(%d)</span></div><div style="border-top:1px solid %s">'
+                 'Off the ID list, signed off (ID consulted in handoffs, or on the AS list) <span style="color:%s;font-weight:400">(%d)</span></div><div style="border-top:1px solid %s">'
                  % (INK, MUTED, len(so), INK))
-        T.append("OFF THE ID LIST, STILL ID CONSULTED IN HANDOFFS (%d)" % len(so)); T.append("")
+        T.append("OFF THE ID LIST, SIGNED OFF (ID CONSULTED IN HANDOFFS, OR ON THE AS LIST) (%d)" % len(so)); T.append("")
         for o in so:
             H.append('<div bgcolor="%s" style="padding:8px;border-bottom:1px solid %s;font-size:14px;line-height:1.4;color:%s"><b>%s %s</b>: %s</div>'
                      % (WHITE, LINE, INK, escape(o["room"]), escape(o["name"]), escape(o["line"])))
@@ -118,8 +118,8 @@ def build(render, date_label, groups=None, label="", offlist=True):
     H[2] = '<div style="font-size:13px;color:%s;margin:4px 0 0 0;line-height:1.4">%s</div>' % (MUTED, sub)
     T[1] = "%s | %d patients" % (date_label, n)
     H.append('<div style="font-size:11px;color:%s;margin:18px 0 0 0;line-height:1.4">Grey card = new to service. '
-             "Blue-edged card = UC, under our care. Struck drug = stopped. Blue drug = our previous-day recommendation not applied. "
-             "Red = conflict between handoffs, AS list or AMS sheet. "
+             "Dark-edged card = UC, under our care. Struck drug = stopped. Bold drug = our previous-day recommendation not applied. "
+             "Bold Conflict line = conflict between handoffs, AS list or AMS sheet. "
              "D&lt;n&gt; on a drug line = computed days on drug; ~ = start known only from the AS list; "
              "d&lt;n&gt; on a pending = days outstanding.</div></div>" % MUTED)
     return "\n".join(H) + "\n", "\n".join(T).rstrip() + "\n", n

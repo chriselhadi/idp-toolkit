@@ -311,7 +311,7 @@ def main():
     SO = getattr(load_synth(synth_p), "SIGNED_OFF", {})
     off = census.get("cs_id_offlist", [])
     if off:
-        out_lines.append("*Off the ID list, still ID consulted in handoffs*")
+        out_lines.append("*Off the ID list, signed off (ID consulted in handoffs, or on the AS list)*")
         for o in off:
             out_lines.append("%s %s: %s" % (o["room"], o["name"], SO.get(o["pid"], "")))
         out_lines.append("")

@@ -46,8 +46,7 @@ ENTRIES = [
                      issues=[("HAP (29/08) | improving | ICU plan 04/09: stop D7", ["Piptazo IV q6h 29/08-"])])),
     ((D1, D2), entry("Charlie Tester Three", "80, no ward row (roster and AS list only); adm 28/08, 4th fl; IM: none documented.",
                      issues=[("Infection undetermined (undated) | - | on Erta per AS list, no ward detail", ["Erta OD ~29/08-"])])),
-    ((D1,), entry("FOXTROT TESTER SIX", "66, AS list only, no ward row, not on roster; adm 26/08, CSU2D; IM: none documented.",
-                  abx_other=["Zavi IV q8h ~03/09-"])),
+    # FOXTROT TESTER SIX: AS list standing therapy, not on the roster -> signed-off block (SIGNED_OFF only)
     # Golf's day-1 record is slimmed in the state before day 2 (run_e2e.sh): render_wa must not crash
     ((D1, D2), entry("Golf Tester Seven", "40M; adm ?, 3rd fl; IM: none active.",
                      issues=[("Cellulitis L leg (01/09) | improving | on Augmentin", ["Augmentin PO BID 01/09-"])],
@@ -74,6 +73,7 @@ ENTRIES = [
 SYNTH = {PID[e["name"]]: e for days, e in ENTRIES if DAY in days}
 
 _OFF = {"Papa Tester Fifteen": "Line infection, ID signed off 05/09, ICU team following cultures.",
+        "FOXTROT TESTER SIX": "On Zavi per AS list, not on the ID list; no ID follow-up.",
         "RANIYA Kilo JULIET": "Pyelonephritis, off the ID list 07/09 after oral switch."}
 # an unexpected off-list name gets no one-liner, so validate_synth.py reports it
 SIGNED_OFF = {o["pid"]: _OFF.get(o["name"], "") for o in _CENSUS.get("cs_id_offlist", [])}

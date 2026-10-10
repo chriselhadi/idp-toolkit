@@ -114,7 +114,7 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
     notes = []
     for pid, rec in state["patients"].items():
         if pid in {c["pid"] for c in census["patients"]} or rec.get("archive_note_sent") \
-                or (rec.get("archived_reason") or "").startswith("ID consult in a handoff") \
+                or (rec.get("archived_reason") or "").startswith(("ID consult in a handoff", "AS list standing therapy")) \
                 or rec.get("dup_of"):  # OVERLAY_6 4e: a merged duplicate gets no note of its own
             continue
         sy = rec.get("synth", {}) or {}

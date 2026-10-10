@@ -37,6 +37,10 @@ cd "$D1"
 python3 "$I/parse_as.py" in/as.eml in/as_today.json | tee as_parse.txt
 grepcheck as_source_d1 "source=attachment:AS list 06.09.2026.XLSX" as_parse.txt
 pycheck as_rows_today 2026-09-06 100090 100011
+python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-06 | tee as_gate.txt
+grepcheck as_gate_ok "AS GATE OK" as_gate.txt
+python3 "$I/as_gate.py" in/as_today.json in/as_today.json 2026-09-06 > as_gate2.txt || true
+grepcheck as_gate_identical "AS GATE WAIT: today's list is identical" as_gate2.txt
 python3 "$I/match.py" MISSING in/as_today.json in/wards.json in/ams.json out --date 06.09.2026 --roster in/roster.txt
 pycheck roster_lines
 pycheck blank_bed_keeps_roster_room
