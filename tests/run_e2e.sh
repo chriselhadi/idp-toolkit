@@ -115,6 +115,20 @@ python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
 grepcheck export_ok "EXPORT OK: 10 patients, 11 files" export.txt
 grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
 grepcheck export_ams_culture "2026-09-07,P0001,Main sheet Sep 2026,4,2026-09-05,blood" "out/export/tables/ams_cultures 2026-09-07.csv"
+python3 "$I/export.py" . --date 2026-09-07 --out export_split --part-chars 5000 | tee export_split.txt
+grepcheck export_split_parts "IDP Dashboard 2026-09-07 (part 1 of" export_split.txt
+python3 - export_split out/export <<'PY'
+import glob, json, os, re, sys
+parts = sorted(glob.glob(os.path.join(sys.argv[1], "IDP Dashboard 2026-09-07 (part * of *).json")),
+               key=lambda p: int(re.search(r"part (\d+) of", p).group(1)))
+joined = json.loads("".join(open(p, encoding="utf-8").read() for p in parts))
+whole = json.load(open(os.path.join(sys.argv[2], "IDP Dashboard 2026-09-07.json"), encoding="utf-8"))
+joined.pop("generated"); whole.pop("generated")
+assert joined == whole, "parts do not rejoin to the whole file"
+for t in glob.glob(os.path.join(sys.argv[1], "tables", "*(part 1 of*).csv")):
+    assert open(t).readline() == open(t.replace("part 1 of", "part 2 of")).readline(), "a table part lost its header"
+print("CHECK export_split_rejoins OK (%d parts)" % len(parts))
+PY
 grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,5,1" "out/export/tables/abx_courses 2026-09-07.csv"
 
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
