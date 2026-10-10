@@ -299,6 +299,7 @@ def main():
 
     # 2. AS list: rooms first; new names enter as new consults (standing therapy or ward-doc match); ONCE-only names are shots.
     single_dose = []
+    as_offlist = []  # OVERLAY_8 D8
     Y_MRNS = {q.get("mrn") for q in ((as_yday or {}).get("patients") or [])}
     if as_today:
         for p in as_today["patients"]:
@@ -312,6 +313,19 @@ def main():
                 flags.append("new on today's AS list, added (%s)" % pid)
             elif not pid and "paeds" in p.get("flags", []):
                 continue  # paeds never enter the adult census from the AS list; listed in the Delta Report instead
+            if roster and not newly and not p.get("once_only") and "paeds" not in p.get("flags", []) \
+                    and (not pid or (pid not in census and not reg.p[pid].get("active"))):  # OVERLAY_8 D8
+                if not pid:
+                    pid = reg.add(p["name"], p["mrn"], today)
+                r8 = reg.p[pid]; r8["active"] = False; r8["archived"] = r8.get("archived") or today
+                r8["archived_reason"] = r8.get("archived_reason") or "AS list standing therapy, not on the ID list"
+                reg.alias(pid, p["name"], p["mrn"])
+                if not any(o["pid"] == pid for o in as_offlist):
+                    as_offlist.append({"pid": pid, "name": r8["name"], "room": p.get("room") or "?", "doc": "AS list",
+                                       "archived": r8["archived"],
+                                       "row": {"cells": {"ABX": "AS list: " + ", ".join(p.get("standing_drugs") or p.get("drugs") or [])}}})
+                flags.append("on the AS list (standing therapy), not on the ID list: signed-off block (%s)" % pid)
+                continue
             if not pid:
                 if p.get("once_only"):  # OVERLAY_R: once-only never enters, ward row or not
                     single_dose.append("%s %s: %s" % (p["room"], p["name"], ", ".join(p["drugs"])))
@@ -330,7 +344,7 @@ def main():
 
     # 2b. Handoff rows marked Cs ID / UC ID (Chris, 28.09.2026): a new name enters as a new
     # consult; a name that came off the ID list is listed once in cs_id_offlist.
-    cs_offlist = []
+    cs_offlist = list(as_offlist)  # OVERLAY_8 D8: AS-list signed-off patients first
     for row in (wards or []):
         if not (row.get("id_consult") or row.get("uc_id")):
             continue
@@ -396,7 +410,7 @@ def main():
         rec["orphan"] = not rows
         blk, status = ams_lookup(ams, rec["name"], rec["mrn"], today)
         rec["ams_status"] = status; rec["ams_block"] = blk
-        rec["ams_fellow"] = (blk or {}).get("fellow", "")
+        rec["ams_fellow"] = (blk or {}).get("fellow", "") if status == "present" else ""  # OVERLAY_8 D4: earlier admission -> ?
         if not rec["room"]:
             rec["room"], rec["group"], rec["room_source"] = "?", "Other", None
             flags.append("no room for %s (%s) from any source" % (rec["name"], pid))

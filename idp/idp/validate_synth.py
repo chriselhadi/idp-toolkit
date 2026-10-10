@@ -192,7 +192,7 @@ def validate(mod, census, today):
     SO = getattr(mod, "SIGNED_OFF", {})
     for o in census.get("cs_id_offlist", []):
         if not isinstance(SO.get(o["pid"]), str) or not SO.get(o["pid"]).strip():
-            errors.append("SIGNED_OFF needs a one-liner for %s (%s %s): off the ID list, still ID consulted in a handoff" % (o["pid"], o["room"], o["name"]))
+            errors.append("SIGNED_OFF needs a one-liner for %s (%s %s): off the ID list (ID consulted in a handoff, or AS-list standing therapy)" % (o["pid"], o["room"], o["name"]))
     for _pid, _s in (SO or {}).items():  # OVERLAY_6 4a
         for _d in find_doses(_s if isinstance(_s, str) else ""):
             errors.append("SIGNED_OFF %s: dose '%s' (frequencies only, never a dose)" % (_pid, _d))

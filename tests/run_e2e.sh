@@ -37,6 +37,10 @@ cd "$D1"
 python3 "$I/parse_as.py" in/as.eml in/as_today.json | tee as_parse.txt
 grepcheck as_source_d1 "source=attachment:AS list 06.09.2026.XLSX" as_parse.txt
 pycheck as_rows_today 2026-09-06 100090 100011
+python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-06 | tee as_gate.txt
+grepcheck as_gate_ok "AS GATE OK" as_gate.txt
+python3 "$I/as_gate.py" in/as_today.json in/as_today.json 2026-09-06 > as_gate2.txt || true
+grepcheck as_gate_identical "AS GATE WAIT: today's list is identical" as_gate2.txt
 python3 "$I/match.py" MISSING in/as_today.json in/wards.json in/ams.json out --date 06.09.2026 --roster in/roster.txt
 pycheck roster_lines
 pycheck blank_bed_keeps_roster_room
@@ -84,6 +88,34 @@ grep -A1 -x "CCU / CSU:" id_list.txt > id_list_ccu.txt || true
 grepcheck id_list_ccu_group "CCU2 Hotel Tester Eight MJ" id_list_ccu.txt
 python3 "$I/archive_split.py" out/archive_notes.txt out/archive 2026-09-07 || fail archive_notes_dose_free "archive_split.py refused a note"
 grepcheck archive_notes_split "RANIYA Kilo JULIET" out/archive/manifest.tsv
+
+# cross-day verification and the daily export (dashboard bundle + research tables)
+python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json MISSING out --date 2026-09-07 --synth synth.py | tee verify.txt
+grepcheck verify_ok "VERIFY OK" verify.txt
+python3 - out/state_new.json bad_state.json <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+pid = next(k for k, r in s["patients"].items() if r["name"] == "Alpha Tester One")
+s["patients"][pid]["synth"]["micro"] = []
+s["patients"][pid]["synth"]["issues"][0]["abx"] = []
+json.dump(s, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+python3 "$I/verify_days.py" "$D1/out/state_new.json" bad_state.json out/census.json in/as_today.json MISSING verify_bad --date 2026-09-07 > verify_bad.txt || true
+grepcheck verify_catches_dropped_drug "BLOCK E_DRUG_DROPPED:P0001:Mero" verify_bad.txt
+grepcheck verify_catches_dropped_culture "BLOCK E_MICRO_DROPPED:P0001:2026-09-04 ucx" verify_bad.txt
+grepcheck verify_catches_as_drug "BLOCK E_AS_DRUG_NOT_RUNNING:P0001:Mero" verify_bad.txt
+python3 "$T/tests/make_ams_fixture.py" in/ams_fixture.xlsx
+python3 "$I/ams_check.py" in/ams_fixture.xlsx out/state_new.json out/census.json out --date 2026-09-07 | tee ams_check.txt
+grepcheck ams_check_links "AMS CHECK OK: 3 of 10 census patients linked" ams_check.txt
+grepcheck ams_open_course "X_AMS_COURSE_OPEN:P0001:vanco" out/ams_check.json
+grepcheck ams_culture_missing "X_AMS_CULTURE_NOT_ON_LIST:P0001:2026-09-05 blood" out/ams_check.json
+grepcheck ams_finalised_active "X_AMS_FINALISED_BUT_ACTIVE:P0002" out/ams_check.json
+grepcheck ams_course_not_in_sheet "X_COURSE_NOT_IN_AMS:P0003:erta" out/ams_check.json
+python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
+grepcheck export_ok "EXPORT OK: 10 patients, 11 files" export.txt
+grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
+grepcheck export_ams_culture "2026-09-07,P0001,Main sheet Sep 2026,4,2026-09-05,blood" "out/export/tables/ams_cultures 2026-09-07.csv"
+grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,5,1" "out/export/tables/abx_courses 2026-09-07.csv"
 
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
 mkdir -p "$CH"; cd "$CH"
