@@ -16,7 +16,10 @@ comparison with it), cultures.json (optional). Writes to --out (default <run dir
   tables/identifiers <date>.csv   pid -> MRN, name, aliases. Kept apart so the other tables can be shared
                               pseudonymised by leaving this one out.
 
-Upload each file as text/plain (CSV and JSON stay plain text in Drive). Prints EXPORT OK with the file list.
+Upload each file as text/plain (CSV and JSON stay plain text in Drive). A file longer than --part-chars (default
+38000, under the size one upload carries byte-exact) is split: the dashboard into "IDP Dashboard <date> (part n of
+N).json", consecutive slices of the one JSON text that the reader joins in order before parsing; a table into
+"<table> <date> (part n of N).csv", each part a complete CSV with the header. Prints EXPORT OK with the file list.
 """
 import argparse
 import csv
@@ -194,23 +197,52 @@ def build(run_dir, date):
     return bundle, {k: csv_text(v, TABLES[k]) for k, v in T.items()}
 
 
+def split_text(txt, limit):
+    """Consecutive slices of at most `limit` characters."""
+    return [txt[i:i + limit] for i in range(0, len(txt), limit)] or [""]
+
+
+def split_csv(txt, limit):
+    """Complete CSVs (header + whole rows) of at most `limit` characters each."""
+    lines = txt.splitlines(keepends=True)
+    head, rows = lines[0], lines[1:]
+    parts, cur = [], head
+    for r in rows:
+        if len(cur) + len(r) > limit and cur != head:
+            parts.append(cur)
+            cur = head
+        cur += r
+    parts.append(cur)
+    return parts
+
+
+def write_parts(folder, stem, ext, chunks):
+    paths = []
+    n = len(chunks)
+    for i, c in enumerate(chunks, 1):
+        name = "%s%s" % (stem, ext) if n == 1 else "%s (part %d of %d)%s" % (stem, i, n, ext)
+        p = os.path.join(folder, name)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(c)
+        paths.append(p)
+    return paths
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run_dir"); ap.add_argument("--date", required=True); ap.add_argument("--out", default="")
+    ap.add_argument("--part-chars", type=int, default=38000)
     a = ap.parse_args()
     out = a.out or os.path.join(a.run_dir, "out", "export")
+    if os.path.isdir(out):
+        import shutil
+        shutil.rmtree(out)  # a re-run must not leave parts of an earlier split behind
     os.makedirs(os.path.join(out, "tables"), exist_ok=True)
     bundle, tables = build(a.run_dir, a.date)
-    files = []
-    p = os.path.join(out, "IDP Dashboard %s.json" % a.date)
-    with open(p, "w", encoding="utf-8") as f:
-        json.dump(bundle, f, ensure_ascii=False, separators=(",", ":"))
-    files.append(p)
+    text = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+    files = write_parts(out, "IDP Dashboard %s" % a.date, ".json", split_text(text, a.part_chars))
     for k, txt in tables.items():
-        p = os.path.join(out, "tables", "%s %s.csv" % (k, a.date))
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(txt)
-        files.append(p)
+        files += write_parts(os.path.join(out, "tables"), "%s %s" % (k, a.date), ".csv", split_csv(txt, a.part_chars))
     for p in files:
         print("  %7d  %s" % (os.path.getsize(p), os.path.relpath(p, out)))
     print("EXPORT OK: %d patients, %d files" % (bundle["counts"]["census"], len(files)))
