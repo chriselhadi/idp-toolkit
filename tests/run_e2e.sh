@@ -89,6 +89,25 @@ grepcheck id_list_ccu_group "CCU2 Hotel Tester Eight MJ" id_list_ccu.txt
 python3 "$I/archive_split.py" out/archive_notes.txt out/archive 2026-09-07 || fail archive_notes_dose_free "archive_split.py refused a note"
 grepcheck archive_notes_split "RANIYA Kilo JULIET" out/archive/manifest.tsv
 
+# cross-day verification and the daily export (dashboard bundle + research tables)
+python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json MISSING out --date 2026-09-07 --synth synth.py | tee verify.txt
+grepcheck verify_ok "VERIFY OK" verify.txt
+python3 - out/state_new.json bad_state.json <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1], encoding="utf-8"))
+pid = next(k for k, r in s["patients"].items() if r["name"] == "Alpha Tester One")
+s["patients"][pid]["synth"]["micro"] = []
+s["patients"][pid]["synth"]["issues"][0]["abx"] = []
+json.dump(s, open(sys.argv[2], "w", encoding="utf-8"))
+PY
+python3 "$I/verify_days.py" "$D1/out/state_new.json" bad_state.json out/census.json in/as_today.json MISSING verify_bad --date 2026-09-07 > verify_bad.txt || true
+grepcheck verify_catches_dropped_drug "BLOCK E_DRUG_DROPPED:P0001:Mero" verify_bad.txt
+grepcheck verify_catches_dropped_culture "BLOCK E_MICRO_DROPPED:P0001:2026-09-04 ucx" verify_bad.txt
+grepcheck verify_catches_as_drug "BLOCK E_AS_DRUG_NOT_RUNNING:P0001:Mero" verify_bad.txt
+python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
+grepcheck export_ok "EXPORT OK: 10 patients, 9 files" export.txt
+grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,5,1" "out/export/tables/abx_courses 2026-09-07.csv"
+
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
 mkdir -p "$CH"; cd "$CH"
 python3 "$I/drive_state.py" patch "$D1/out/state_new.json" "$D2/out/state_new.json" patch | tee patch.txt

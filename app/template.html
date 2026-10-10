@@ -1,0 +1,469 @@
+<title>ID Round</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one calm column; a sticky round bar on top, a single patient in focus, everything else one tap away. */
+:root{
+  --bg:#eef3f4; --surface:#ffffff; --raised:#f7fafb; --ink:#13212a; --muted:#566874; --line:#d6e0e4;
+  --accent:#0d6b72; --accent-ink:#ffffff; --accent-soft:#dcefef;
+  --crit:#b3261e; --crit-soft:#fbe6e3; --warn:#9a5b00; --warn-soft:#fbefd8; --ok:#1d7447; --ok-soft:#e1f2e8;
+  --info:#3c5a99; --info-soft:#e4eaf7;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:"Atkinson Hyperlegible",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0e161b; --surface:#15212a; --raised:#1a2832; --ink:#e4ecf0; --muted:#93a6b2; --line:#26353f;
+  --accent:#4fb5b6; --accent-ink:#06191b; --accent-soft:#12322f;
+  --crit:#ff8b7d; --crit-soft:#3b1a16; --warn:#f2b552; --warn-soft:#352610; --ok:#6fd49d; --ok-soft:#12301f;
+  --info:#9db7ff; --info-soft:#1b2540; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0e161b; --surface:#15212a; --raised:#1a2832; --ink:#e4ecf0; --muted:#93a6b2; --line:#26353f;
+  --accent:#4fb5b6; --accent-ink:#06191b; --accent-soft:#12322f;
+  --crit:#ff8b7d; --crit-soft:#3b1a16; --warn:#f2b552; --warn-soft:#352610; --ok:#6fd49d; --ok-soft:#12301f;
+  --info:#9db7ff; --info-soft:#1b2540; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:16px/1.5 var(--body);padding-inline:16px;padding-block:0 48px}
+.wrap{max-width:980px;margin:0 auto;display:grid;gap:16px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0;line-height:1.2}
+.mono,time,.dcount,.sid{font-family:var(--mono);font-variant-numeric:tabular-nums}
+button{font:inherit;color:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+
+/* header */
+.top{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:var(--bg);padding-block:12px 8px;display:grid;gap:10px;border-bottom:1px solid var(--line)}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.brand{display:flex;align-items:baseline;gap:10px;flex:1 1 auto;min-width:0}
+.brand h1{font-size:1.45rem;letter-spacing:-.01em}
+.brand .date{color:var(--muted);font-family:var(--mono);font-size:.9rem}
+.src{font-size:.78rem;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+.src.live{border-color:var(--ok);color:var(--ok)}
+.src.sample{border-color:var(--warn);color:var(--warn)}
+select{font:inherit;font-size:.9rem;background:var(--surface);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.tabs{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none}
+.tabs button{border:0;background:none;padding:8px 12px;border-radius:8px;color:var(--muted);font-weight:700;white-space:nowrap}
+.tabs button[aria-selected="true"]{background:var(--accent);color:var(--accent-ink)}
+.tabs .n{font-family:var(--mono);font-weight:400;font-size:.8rem;margin-left:4px;opacity:.85}
+
+/* summary strip */
+.strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+@media (max-width:560px){.strip{grid-template-columns:repeat(2,minmax(0,1fr))}.strip .tile:last-child{grid-column:1/-1}}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;display:grid;gap:2px}
+.tile b{font-family:var(--mono);font-size:1.35rem;font-weight:600}
+.tile span{color:var(--muted);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}
+.tile.crit{border-color:var(--crit);background:var(--crit-soft)} .tile.crit b{color:var(--crit)}
+.tile.ok b{color:var(--ok)}
+.banner{border-radius:var(--r);padding:10px 14px;font-size:.92rem;border:1px solid var(--line);background:var(--surface)}
+.banner.warn{border-color:var(--warn);background:var(--warn-soft)}
+.banner.crit{border-color:var(--crit);background:var(--crit-soft)}
+
+/* chips */
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:.76rem;font-weight:700;letter-spacing:.03em;padding:2px 8px;border-radius:999px;border:1px solid transparent;white-space:nowrap}
+.c-crit{background:var(--crit-soft);color:var(--crit);border-color:color-mix(in srgb,var(--crit) 35%,transparent)}
+.c-warn{background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)}
+.c-ok{background:var(--ok-soft);color:var(--ok);border-color:color-mix(in srgb,var(--ok) 35%,transparent)}
+.c-info{background:var(--info-soft);color:var(--info);border-color:color-mix(in srgb,var(--info) 35%,transparent)}
+.c-accent{background:var(--accent-soft);color:var(--accent)}
+.c-plain{background:var(--raised);color:var(--muted);border-color:var(--line)}
+
+/* round view */
+.progress{display:grid;gap:6px}
+.bar{height:8px;background:var(--line);border-radius:999px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--accent);border-radius:999px;transition:width .25s}
+.nav{display:flex;gap:8px;align-items:center;justify-content:space-between}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:9px 14px;font-weight:700}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.done{background:var(--ok-soft);color:var(--ok);border-color:var(--ok)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;display:grid;gap:16px}
+.card.uc{border-left:5px solid var(--info)}
+.phead{display:grid;gap:6px}
+.phead .where{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.room{font-family:var(--mono);font-weight:600;font-size:1.05rem;background:var(--raised);border:1px solid var(--line);border-radius:6px;padding:1px 8px}
+.phead h2{font-size:1.5rem}
+.oneliner{color:var(--muted);max-width:70ch}
+.sec{display:grid;gap:8px}
+.sec>h3{font-family:var(--body);font-size:.74rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);font-weight:700}
+.changed{background:var(--accent-soft);border-radius:var(--r);padding:12px 14px;display:grid;gap:6px}
+.changed li{margin:0}
+ul.plain{list-style:none;padding:0;margin:0;display:grid;gap:6px}
+.issue{border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;display:grid;gap:8px;background:var(--raised)}
+.issue .dx{font-weight:700}
+.issue .facts{color:var(--muted);font-size:.93rem}
+.issue .stand{font-size:.93rem}
+.drug{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:.95rem}
+.drug .nm{font-weight:700;min-width:5.5em}
+.drug.stopped .nm{text-decoration:line-through;color:var(--muted)}
+.dcount{font-size:.82rem;font-weight:600;padding:1px 7px;border-radius:6px;background:var(--accent-soft);color:var(--accent)}
+.dcount.long{background:var(--warn-soft);color:var(--warn)}
+.drug .win{color:var(--muted);font-family:var(--mono);font-size:.82rem}
+.drug .note{font-size:.82rem;color:var(--info)}
+.micro{display:grid;grid-template-columns:auto auto 1fr;gap:6px 10px;align-items:baseline;font-size:.93rem}
+.micro time{color:var(--muted);font-size:.82rem}
+.status3{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px}
+.st{border-radius:var(--r);padding:8px 12px;border:1px solid var(--line);font-size:.92rem}
+.st small{display:block;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.st.ok{background:var(--ok-soft);border-color:color-mix(in srgb,var(--ok) 30%,transparent)}
+.st.warn{background:var(--warn-soft);border-color:color-mix(in srgb,var(--warn) 30%,transparent)}
+.st.crit{background:var(--crit-soft);border-color:color-mix(in srgb,var(--crit) 30%,transparent)}
+.pend{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.pend .gate{color:var(--muted);font-size:.9rem}
+.find{display:grid;gap:4px;border-left:3px solid var(--line);padding-left:10px;font-size:.9rem}
+.find.ERROR{border-color:var(--crit)} .find.WARN{border-color:var(--warn)} .find.INFO{border-color:var(--info)}
+.find code{font-family:var(--mono);font-size:.74rem;color:var(--muted);word-break:break-all}
+.alert{border-radius:var(--r);padding:8px 12px;font-size:.92rem}
+.alert.conflict{background:var(--crit-soft);color:var(--ink);border:1px solid color-mix(in srgb,var(--crit) 40%,transparent)}
+.alert.na{background:var(--info-soft);border:1px solid color-mix(in srgb,var(--info) 40%,transparent)}
+.muted{color:var(--muted)}
+.kbd{font-family:var(--mono);font-size:.75rem;border:1px solid var(--line);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--muted)}
+
+/* census list */
+.ward{display:grid;gap:8px}
+.ward h3{font-size:1rem;display:flex;gap:8px;align-items:baseline}
+.ward h3 .muted{font-family:var(--body);font-size:.8rem;font-weight:400}
+.prow{display:grid;grid-template-columns:4.6rem minmax(0,1fr) auto;gap:10px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;text-align:left;width:100%}
+.prow:hover{border-color:var(--accent)}
+.prow.seen{opacity:.6}
+.prow .who{display:grid;gap:4px;min-width:0}
+.prow .who b{overflow-wrap:anywhere}
+.prow .drugs{display:flex;gap:6px;flex-wrap:wrap}
+.prow .flags{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+
+/* tables and timeline */
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--r)}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);background:var(--raised);position:sticky;top:0}
+td.num{font-family:var(--mono);text-align:right}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.filters button{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 12px;font-size:.85rem}
+.filters button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.gantt{display:grid;gap:4px;min-width:640px;padding:12px}
+.grow{display:grid;grid-template-columns:12rem 1fr;gap:10px;align-items:center;font-size:.86rem}
+.grow .lab{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.track{position:relative;height:18px;background:repeating-linear-gradient(90deg,transparent 0,transparent calc(100%/var(--days) - 1px),var(--line) calc(100%/var(--days) - 1px),var(--line) calc(100%/var(--days)));border-radius:4px}
+.seg{position:absolute;top:2px;height:14px;border-radius:4px;background:var(--accent)}
+.seg.closed{background:var(--muted);opacity:.55}
+.seg.approx{background:repeating-linear-gradient(45deg,var(--accent) 0 6px,color-mix(in srgb,var(--accent) 55%,transparent) 6px 12px)}
+.axis{display:grid;grid-template-columns:12rem 1fr;gap:10px;font-family:var(--mono);font-size:.72rem;color:var(--muted)}
+.axis .ticks{position:relative;height:1.1em}.axis .ticks span{position:absolute;transform:translateX(-50%);white-space:nowrap}.axis .ticks span:first-child{transform:none}.axis .ticks span:last-child{transform:translateX(-100%)}
+.spark{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.spark figure{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:12px;display:grid;gap:6px}
+.spark figcaption{font-size:.78rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:flex;justify-content:space-between}
+.spark figcaption b{font-family:var(--mono);color:var(--ink);font-size:.95rem;letter-spacing:0}
+.spark svg{width:100%;height:56px;display:block}
+.empty{padding:28px;text-align:center;color:var(--muted);background:var(--surface);border:1px dashed var(--line);border-radius:var(--r)}
+details.how{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:10px 14px}
+details.how summary{cursor:pointer;font-weight:700}
+details.how p{max-width:70ch}
+@media (max-width:560px){
+  .prow{grid-template-columns:3.8rem minmax(0,1fr)} .prow .flags{grid-column:2;justify-content:flex-start}
+  .micro{grid-template-columns:auto 1fr} .micro .chip{grid-column:1}
+  .card{padding:14px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="row">
+      <div class="brand"><h1>ID Round</h1><span class="date" id="date">loading</span></div>
+      <span class="src" id="src">sample data</span>
+      <label class="muted" for="day" style="font-size:.8rem">Day</label>
+      <select id="day" aria-label="Day to show"></select>
+    </div>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+  </header>
+  <div id="notice"></div>
+  <section class="strip" id="strip" aria-label="Today at a glance"></section>
+  <main id="view"></main>
+  <details class="how">
+    <summary>Where this comes from</summary>
+    <p>Every morning the 07:00 ID run writes one file, <span class="mono">IDP Dashboard YYYY-MM-DD.json</span>, to your Google Drive folder IDP_Data, next to research tables in CSV. This page reads those files from your Drive with your own Google sign-in each time you open it. Patient data is never stored in this page.</p>
+    <p>Until the first real file exists, the page shows a fictional sample census so you can try it. Checks come from the cross-day verification run: red items blocked the emails until they were fixed or acknowledged with a source.</p>
+  </details>
+</div>
+
+<script id="sample" type="application/json">/*SAMPLE*/</script>
+<script>
+(() => {
+  "use strict";
+  const $ = (s, r = document) => r.querySelector(s);
+  const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const SAMPLE = JSON.parse($("#sample").textContent);
+  const DRIVE = "Google Drive";
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+  };
+  const S = { days: [], bundles: {}, date: null, tab: store.get("tab", "round"), idx: 0, source: "sample", microFilter: "all" };
+
+  const fmtDay = iso => { if (!iso) return "?"; const d = new Date(iso + "T12:00:00"); return d.toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", year: "numeric" }); };
+  const dm = iso => iso ? iso.slice(8, 10) + "/" + iso.slice(5, 7) : "?";
+  const cur = () => S.bundles[S.date];
+  const seenKey = () => "seen:" + S.source + ":" + S.date;
+  const seen = () => new Set(store.get(seenKey(), []));
+  const setSeen = set => store.set(seenKey(), [...set]);
+
+  function severityChips(p) {
+    const f = p.findings || [];
+    const e = f.filter(x => x.severity === "ERROR" && !x.acknowledged).length, w = f.filter(x => x.severity === "WARN").length;
+    let h = "";
+    if (p.new) h += '<span class="chip c-accent">NEW</span>';
+    if (p.uc) h += '<span class="chip c-info">UC</span>';
+    if (e) h += `<span class="chip c-crit">${e} check${e > 1 ? "s" : ""}</span>`;
+    else if (w) h += `<span class="chip c-warn">${w} to review</span>`;
+    if ((p.conflicts || []).length) h += '<span class="chip c-crit">conflict</span>';
+    return h;
+  }
+  const running = p => (p.courses || []).filter(c => c.running);
+  const drugChip = c => `<span class="chip ${c.days >= 14 ? "c-warn" : "c-plain"}">${esc(c.drug)} <span class="mono">D${c.days}</span></span>`;
+  function statusClass(kind, t) {
+    t = (t || "").toLowerCase();
+    if (!t) return "warn";
+    if (kind === "fever") return /afebrile/.test(t) ? "ok" : /tmax|febr|38|39|40/.test(t) ? "warn" : "";
+    if (kind === "pressors") return /no pressor|off pressor|none/.test(t) ? "ok" : /ne |norepi|pressor|vaso|dobut/.test(t) ? "crit" : "";
+    if (kind === "resp") return /\bra\b|room air/.test(t) ? "ok" : /intubat|mv |vent|ett/.test(t) ? "crit" : /nc|hfnc|bipap|mask|o2/.test(t) ? "warn" : "";
+    return "";
+  }
+  const microChip = s => ({ positive: '<span class="chip c-crit">POS</span>', prelim: '<span class="chip c-warn">PRELIM</span>', pending: '<span class="chip c-plain">PENDING</span>', negative: '<span class="chip c-ok">NEG</span>' }[s] || '<span class="chip c-plain">?</span>');
+
+  function drugLine(c) {
+    const win = c.segments.map(s => s.single ? "x1 " + dm(s.start) : (s.start_approx ? "~" : "") + dm(s.start) + "→" + (s.open ? "now" : dm(s.end))).join(", ");
+    const na = (cur().patients.find(p => p.courses.includes(c)) || {}).not_applied || {};
+    return `<div class="drug ${c.running ? "" : "stopped"}"><span class="nm">${esc(c.drug)}</span>
+      ${c.running ? `<span class="dcount ${c.days >= 14 ? "long" : ""}">D${c.days}</span>` : `<span class="chip c-plain">stopped ${esc(dm(c.stop))}</span>`}
+      <span class="mono muted" style="font-size:.82rem">${esc([c.route, c.freq].filter(Boolean).join(" "))}</span>
+      <span class="win">${esc(win)}</span>${c.start_approx ? '<span class="chip c-plain" title="start date from the AS list only">~ start</span>' : ""}
+      ${c.note ? `<span class="note">${esc(c.note)}</span>` : ""}${na[c.drug] ? `<span class="chip c-info">ID rec not applied: ${esc(na[c.drug])}</span>` : ""}</div>`;
+  }
+
+  function patientCard(p) {
+    const ch = (p.changes || []), up = (p.updates || []), upn = (p.updates_nonid || []);
+    const changed = ch.length || up.length || upn.length ? `<section class="sec"><h3>Since yesterday</h3><div class="changed">
+        ${up.map(u => `<div>${esc(u)}</div>`).join("")}${upn.map(u => `<div class="muted">${esc(u)}</div>`).join("")}
+        ${ch.length ? `<div class="row" style="gap:6px">${ch.map(x => `<span class="chip c-accent" title="${esc(x.kind)}">${esc(x.text)}</span>`).join("")}</div>` : ""}</div></section>` : "";
+    const issues = (p.issues || []).map((i, n) => `<div class="issue"><div class="dx">${n + 1}. ${esc(i.dx)} <span class="mono muted" style="font-weight:400;font-size:.82rem">${esc(i.onset ? dm(i.onset) : i.onset_text)}</span></div>
+        ${i.facts && i.facts !== "-" ? `<div class="facts">${esc(i.facts)}</div>` : ""}${i.status ? `<div class="stand">${esc(i.status)}</div>` : ""}
+        ${i.abx.length ? `<div class="sec" style="gap:6px">${i.abx.map(drugLine).join("")}</div>` : ""}</div>`).join("");
+    const other = (p.abx_other || []).length ? `<div class="issue"><div class="dx">Antimicrobials not tied to an issue</div>${p.abx_other.map(drugLine).join("")}</div>` : "";
+    const micro = (p.micro || []).length ? `<section class="sec"><h3>Micro</h3>${p.micro_recap ? `<div class="muted" style="font-size:.9rem">${esc(p.micro_recap)}</div>` : ""}<div class="micro">
+        ${p.micro.map(m => `${microChip(m.status)}<time>${esc(m.prior ? "prior" : dm(m.date))}</time><span><b>${esc(m.specimen)}</b> ${esc(m.result)}${m.verify ? ' <span class="chip c-warn">to verify</span>' : ""}</span>`).join("")}</div></section>` : "";
+    const st = p.status || {};
+    const status = `<section class="sec"><h3>Status</h3><div class="status3">
+        ${[["Fever", "fever"], ["Pressors", "pressors"], ["Respiratory", "resp"]].map(([l, k]) => `<div class="st ${statusClass(k, st[k])}"><small>${l}</small>${esc(st[k] || "not documented")}</div>`).join("")}</div>
+        ${(p.imaging || []).length ? `<ul class="plain">${p.imaging.map(x => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</section>`;
+    const pend = (p.pendings || []).length ? `<section class="sec"><h3>Pending</h3><ul class="plain">${p.pendings.map(x => `<li class="pend">
+        <span class="chip ${x.age_days > 3 ? "c-warn" : "c-plain"} mono">${x.age_days == null ? "?" : "d" + x.age_days}</span><b>${esc(x.item)}</b>
+        <span class="mono muted" style="font-size:.82rem">since ${esc(dm(x.since))}</span>${x.gate ? `<span class="gate">→ ${esc(x.gate)}</span>` : ""}</li>`).join("")}</ul></section>` : "";
+    const alerts = [...(p.conflicts || []).map(c => `<div class="alert conflict"><b>Conflict:</b> ${esc(c)}</div>`)].join("");
+    const im = (p.im_detail || []).length ? `<section class="sec"><h3>Internal medicine (UC)</h3><ul class="plain">${p.im_detail.map(x => `<li>${esc(x)}</li>`).join("")}</ul></section>` : "";
+    const finds = (p.findings || []).length ? `<section class="sec"><h3>Checks</h3>${p.findings.map(findingRow).join("")}</section>` : "";
+    return `<article class="card ${p.uc ? "uc" : ""}" aria-label="${esc(p.name)}">
+      <div class="phead"><div class="where"><span class="room">${esc(p.room || "?")}</span><span class="muted">${esc(p.group || "")}</span>
+        <span class="chip c-plain mono">${esc(p.fellow || "?")}</span>${severityChips(p)}
+        ${p.days_on_service ? `<span class="muted mono" style="font-size:.8rem">day ${p.days_on_service} on service</span>` : ""}</div>
+        <h2>${esc(p.name)}</h2><div class="oneliner">${esc(p.one_liner)}</div></div>
+      ${alerts}${changed}<section class="sec"><h3>ID issues</h3>${issues || '<div class="muted">No ID issue recorded.</div>'}${other}</section>
+      ${micro}${status}${pend}${im}${finds}</article>`;
+  }
+  const findingRow = f => `<div class="find ${f.severity}"><div><span class="chip ${f.severity === "ERROR" ? "c-crit" : f.severity === "WARN" ? "c-warn" : "c-info"}">${f.severity === "ERROR" ? (f.acknowledged ? "resolved" : "error") : f.severity.toLowerCase()}</span>
+      ${f.room ? `<span class="room" style="font-size:.8rem">${esc(f.room)}</span> ` : ""}${esc(f.message)}</div>
+      ${f.acknowledged ? `<div class="muted">Acknowledged: ${esc(f.acknowledged)}</div>` : ""}<code>${esc(f.id)}</code></div>`;
+
+  /* views */
+  function viewRound() {
+    const b = cur(), ps = b.patients, sn = seen();
+    if (!ps.length) return '<div class="empty">No patients on the census for this day.</div>';
+    S.idx = Math.max(0, Math.min(S.idx, ps.length - 1));
+    const p = ps[S.idx], done = sn.has(p.pid), n = ps.filter(x => sn.has(x.pid)).length;
+    return `<div class="progress"><div class="row" style="justify-content:space-between"><span><b class="mono">${n}</b> of <b class="mono">${ps.length}</b> seen</span>
+        <span class="muted" style="font-size:.82rem"><span class="kbd">←</span> <span class="kbd">→</span> move, <span class="kbd">space</span> mark seen</span></div>
+        <div class="bar"><i style="width:${(100 * n / ps.length).toFixed(1)}%"></i></div></div>
+      <div class="nav"><button class="btn" data-act="prev" ${S.idx ? "" : "disabled"}>Previous</button>
+        <span class="mono muted">${S.idx + 1} / ${ps.length}</span>
+        <button class="btn ${done ? "done" : "primary"}" data-act="seen">${done ? "Seen" : "Mark seen"}</button>
+        <button class="btn" data-act="next" ${S.idx < ps.length - 1 ? "" : "disabled"}>Next</button></div>
+      ${patientCard(p)}`;
+  }
+  function viewCensus() {
+    const b = cur(), sn = seen(), groups = [];
+    b.patients.forEach((p, i) => { let g = groups.find(x => x.name === p.group); if (!g) groups.push(g = { name: p.group || "Unknown", items: [] }); g.items.push([p, i]); });
+    const off = (b.signed_off || []).length ? `<div class="ward"><h3>Off the ID list, signed off <span class="muted">${b.signed_off.length}</span></h3>
+        ${b.signed_off.map(x => `<div class="prow" style="cursor:default"><span class="room">${esc(x.room)}</span><div class="who"><b>${esc(x.name)}</b><span class="muted" style="font-size:.9rem">${esc(x.line)}</span></div><span></span></div>`).join("")}</div>` : "";
+    return groups.map(g => `<div class="ward"><h3>${esc(g.name)} <span class="muted">${g.items.length}</span></h3>
+      ${g.items.map(([p, i]) => `<button class="prow ${sn.has(p.pid) ? "seen" : ""}" data-open="${i}"><span class="room">${esc(p.room || "?")}</span>
+        <span class="who"><b>${esc(p.name)} <span class="mono muted" style="font-weight:400;font-size:.8rem">${esc(p.fellow || "?")}</span></b>
+        <span class="drugs">${running(p).map(drugChip).join("") || '<span class="muted" style="font-size:.85rem">no running antimicrobial</span>'}</span></span>
+        <span class="flags">${severityChips(p)}</span></button>`).join("")}</div>`).join("") + off;
+  }
+  function viewAbx() {
+    const b = cur(), ref = new Date(b.date + "T12:00:00"), span = 21, start = new Date(ref); start.setDate(ref.getDate() - span + 1);
+    const pos = iso => { const d = new Date(iso + "T12:00:00"); return Math.max(0, Math.min(span, (d - start) / 864e5)); };
+    const rows = [];
+    b.patients.forEach(p => p.courses.forEach(c => rows.push([p, c])));
+    rows.sort((a, b2) => (b2[1].running - a[1].running) || (b2[1].days - a[1].days));
+    if (!rows.length) return '<div class="empty">No antimicrobial lines recorded.</div>';
+    const ticks = [0, 7, 14, 20].map(k => { const d = new Date(start); d.setDate(start.getDate() + k); return [k, dm(d.toISOString().slice(0, 10))]; });
+    return `<div class="banner">Last ${span} days to ${esc(dm(b.date))}. Solid bars are running, grey bars stopped, striped bars start only on the AS list. Day counts add up every segment, so a held drug does not inflate its count.</div>
+      <div class="tablewrap"><div class="gantt" style="--days:${span}"><div class="axis"><span></span><span class="ticks">${ticks.map(([k, t]) => `<span style="left:${(100 * (k + .5) / span).toFixed(2)}%">${t}</span>`).join("")}</span></div>
+      ${rows.map(([p, c]) => `<div class="grow"><span class="lab" title="${esc(p.name + " " + c.line)}"><b>${esc(c.drug)}</b> <span class="mono">${c.running ? "D" + c.days : ""}</span> <span class="muted">${esc(p.room)} ${esc(p.name)}</span></span>
+        <div class="track">${c.segments.filter(s => s.start).map(s => { const a = pos(s.start), e = s.open ? span : pos(s.end) + 1; return `<span class="seg ${s.open ? "" : "closed"} ${s.start_approx ? "approx" : ""}" style="left:${(100 * a / span).toFixed(2)}%;width:${Math.max(1.2, 100 * (e - a) / span).toFixed(2)}%"></span>`; }).join("")}</div></div>`).join("")}</div></div>`;
+  }
+  function viewMicro() {
+    const b = cur(), rows = [];
+    b.patients.forEach(p => p.micro.forEach(m => rows.push([p, m])));
+    const f = S.microFilter, keep = rows.filter(([, m]) => f === "all" || m.status === f);
+    keep.sort((a, c) => (c[1].date || "").localeCompare(a[1].date || ""));
+    const count = s => rows.filter(([, m]) => m.status === s).length;
+    const off = (b.cultures.off_census || []).length ? `<div class="banner">Results for patients not on today's census: ${b.cultures.off_census.length}. They are listed in the closing note.</div>` : "";
+    return `<div class="filters">${[["all", "All", rows.length], ["positive", "Positive", count("positive")], ["prelim", "Prelim", count("prelim")], ["pending", "Pending", count("pending")], ["negative", "Negative", count("negative")]]
+        .map(([k, l, n]) => `<button data-mf="${k}" aria-pressed="${f === k}">${l} <span class="mono">${n}</span></button>`).join("")}</div>${off}
+      ${keep.length ? `<div class="tablewrap"><table><thead><tr><th>Collected</th><th>Status</th><th>Patient</th><th>Specimen</th><th>Result</th></tr></thead><tbody>
+      ${keep.map(([p, m]) => `<tr><td class="mono">${esc(m.prior ? "prior" : dm(m.date))}</td><td>${microChip(m.status)}</td><td><span class="room" style="font-size:.8rem">${esc(p.room)}</span> ${esc(p.name)}</td><td><b>${esc(m.specimen)}</b></td><td>${esc(m.result)}${m.verify ? ' <span class="chip c-warn">to verify</span>' : ""}</td></tr>`).join("")}
+      </tbody></table></div>` : '<div class="empty">No culture in this group.</div>'}`;
+  }
+  function viewChecks() {
+    const b = cur(), all = [...b.patients.flatMap(p => (p.findings || []).map(f => ({ ...f, room: f.room || p.room }))), ...(b.verification.findings || [])];
+    const c = b.verification.counts || {};
+    const order = { ERROR: 0, WARN: 1, INFO: 2 };
+    all.sort((a, z) => order[a.severity] - order[z.severity] || String(a.room).localeCompare(String(z.room)));
+    const head = `<div class="banner ${c.blocking ? "crit" : ""}">${c.blocking ? `<b>${c.blocking} unresolved error${c.blocking > 1 ? "s" : ""}.</b> The emails were held until these were fixed.` : "<b>Every cross-day check passed or was acknowledged with a source.</b>"}
+      <span class="muted"> ${c.ERROR || 0} errors, ${c.acknowledged || 0} acknowledged, ${c.WARN || 0} warnings, ${c.INFO || 0} notes.</span></div>`;
+    const flags = (b.flags || []).length ? `<section class="sec"><h3>Pipeline notes</h3><ul class="plain">${b.flags.map(x => `<li class="muted" style="font-size:.9rem">${esc(x)}</li>`).join("")}</ul></section>` : "";
+    return head + (all.length ? `<div class="sec">${all.map(findingRow).join("")}</div>` : "") + flags +
+      (b.run_status ? `<section class="sec"><h3>Run status</h3><div class="mono" style="font-size:.82rem;white-space:pre-wrap">${esc(b.run_status)}</div></section>` : "");
+  }
+  function spark(label, vals, fmt = v => v) {
+    const w = 220, h = 56, pad = 6, n = vals.length, max = Math.max(1, ...vals.map(v => v[1])), min = 0;
+    const x = i => n === 1 ? w / 2 : pad + i * (w - 2 * pad) / (n - 1), y = v => h - pad - (v - min) * (h - 2 * pad) / (max - min || 1);
+    const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v[1]).toFixed(1)}`).join(" ");
+    const last = vals[n - 1];
+    return `<figure><figcaption>${esc(label)} <b>${fmt(last[1])}</b></figcaption><svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)} over ${n} days">
+      <line x1="0" x2="${w}" y1="${h - pad}" y2="${h - pad}" stroke="var(--line)"/>
+      <polygon points="${x(0)},${h - pad} ${pts} ${x(n - 1)},${h - pad}" fill="var(--accent-soft)"/>
+      <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"/>
+      <circle cx="${x(n - 1)}" cy="${y(last[1])}" r="3.5" fill="var(--accent)"/></svg>
+      <div class="row mono muted" style="justify-content:space-between;font-size:.72rem"><span>${dm(vals[0][0])}</span><span>${dm(last[0])}</span></div></figure>`;
+  }
+  function viewTrends() {
+    const ds = S.days.map(d => d.date).filter(d => S.bundles[d]).sort();
+    if (ds.length < 2) return `<div class="empty">Trends need at least two days. ${S.source === "live" ? '<button class="btn" data-act="loadall">Load the last 30 days</button>' : ""}</div>`;
+    const v = k => ds.map(d => [d, S.bundles[d].counts[k] || 0]);
+    return `<div class="spark">${spark("Census", v("census"))}${spark("Running antimicrobials", v("running_abx"))}${spark("Pending items", v("pendings"))}${spark("New patients", v("new"))}${spark("Check errors", v("errors"))}${spark("Warnings", v("warnings"))}</div>
+      ${S.source === "live" ? '<div class="row"><button class="btn" data-act="loadall">Load more days</button></div>' : ""}`;
+  }
+  const TABS = [["round", "Round"], ["census", "Census"], ["abx", "Antimicrobials"], ["micro", "Cultures"], ["checks", "Checks"], ["trends", "Trends"]];
+  const VIEWS = { round: viewRound, census: viewCensus, abx: viewAbx, micro: viewMicro, checks: viewChecks, trends: viewTrends };
+
+  function render() {
+    const b = cur();
+    if (!b) { $("#view").innerHTML = '<div class="empty">Loading the day from Drive.</div>'; return; }
+    $("#date").textContent = fmtDay(b.date);
+    const c = b.counts, sn = seen();
+    $("#tabs").innerHTML = TABS.map(([k, l]) => {
+      const n = k === "checks" ? (c.blocking || c.warnings || "") : k === "round" ? `${b.patients.filter(p => sn.has(p.pid)).length}/${b.patients.length}` : "";
+      return `<button role="tab" aria-selected="${S.tab === k}" data-tab="${k}">${l}${n !== "" ? `<span class="n">${n}</span>` : ""}</button>`;
+    }).join("");
+    $("#strip").innerHTML = [["census", "on service"], ["new", "new today"], ["running_abx", "running abx"], ["pendings", "pending"]]
+      .map(([k, l]) => `<div class="tile"><b>${c[k] ?? 0}</b><span>${l}</span></div>`).join("") +
+      `<div class="tile ${c.blocking ? "crit" : "ok"}"><b>${c.blocking ? c.blocking : "✓"}</b><span>${c.blocking ? "unresolved checks" : "checks passed"}</span></div>`;
+    $("#view").innerHTML = VIEWS[S.tab]();
+  }
+
+  /* data */
+  function setDays(list, source) {
+    S.days = list; S.source = source;
+    $("#day").innerHTML = list.map(d => `<option value="${d.date}">${fmtDay(d.date)}</option>`).join("");
+    const src = $("#src"); src.className = "src " + (source === "live" ? "live" : "sample");
+    src.textContent = source === "live" ? "live from Drive" : "sample data, fictional patients";
+  }
+  function useSample(msg) {
+    S.bundles = {}; SAMPLE.forEach(b => S.bundles[b.date] = b);
+    setDays(SAMPLE.map(b => ({ date: b.date })).sort((a, z) => z.date.localeCompare(a.date)), "sample");
+    S.date = S.days[0].date; $("#day").value = S.date;
+    $("#notice").innerHTML = msg ? `<div class="banner warn">${msg}</div>` : "";
+    render();
+  }
+  const b64utf8 = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)));
+  let mcp = null;
+  async function fetchBundle(day) {
+    if (S.bundles[day.date]) return S.bundles[day.date];
+    const r = await mcp.callTool(DRIVE, "download_file_content", { fileId: day.id }, { cache: { staleTime: 300000, gcTime: 86400000 } });
+    const p = r.payload || {};
+    const b = JSON.parse(b64utf8(p.content || ""));
+    if (b.kind !== "idp_dashboard") throw { code: "bad_file", message: day.title + " is not a dashboard file" };
+    return S.bundles[day.date] = b;
+  }
+  function connectorMessage(e) {
+    const code = e && e.code;
+    if (code === "needs_reauth") return "Your Google Drive connection has lapsed. Reconnect Google Drive in claude.ai Settings, Connectors, then reload this page. Showing the fictional sample meanwhile.";
+    if (code === "server_not_connected" || code === "selection_required") return "Google Drive is not connected for this page. Add or choose Google Drive in claude.ai Settings, Connectors. Showing the fictional sample meanwhile.";
+    if (code === "not_in_manifest" || code === "approval_required" || code === "not_granted") return "This page needs your permission to read Google Drive. Open the page's Permissions menu to allow it. Showing the fictional sample meanwhile.";
+    if (code === "server_unavailable") return "Google Drive did not answer. Reload in a minute. Showing the fictional sample meanwhile.";
+    return "Could not read Drive (" + esc(e && (e.message || e.code) || "unknown error") + "). Showing the fictional sample meanwhile.";
+  }
+  async function listLive() {
+    const files = []; let token = null, guard = 0;
+    do {
+      const input = { query: "title contains 'IDP Dashboard' and mimeType = 'text/plain'", pageSize: 100, excludeContentSnippets: true };
+      if (token) input.pageToken = token;
+      const r = await mcp.callTool(DRIVE, "search_files", input, { cache: { staleTime: 60000 } });
+      const p = r.payload || {};
+      (p.files || []).forEach(f => { const m = /^IDP Dashboard (\d{4}-\d{2}-\d{2})\.json$/.exec(f.title || ""); if (m) files.push({ date: m[1], id: f.id, title: f.title, modified: f.modifiedTime }); });
+      token = p.nextPageToken;
+    } while (token && ++guard < 5);
+    const byDate = {};
+    files.forEach(f => { if (!byDate[f.date] || (f.modified || "") > (byDate[f.date].modified || "")) byDate[f.date] = f; });
+    return Object.values(byDate).sort((a, z) => z.date.localeCompare(a.date));
+  }
+  async function boot() {
+    useSample();
+    try { mcp = await window.claude?.use?.("mcp"); } catch { mcp = null; }
+    if (!mcp) { $("#notice").innerHTML = '<div class="banner">Showing a fictional sample. Open this page in claude.ai, signed in, to read your own days from Google Drive.</div>'; return; }
+    try {
+      const days = await listLive();
+      if (!days.length) { $("#notice").innerHTML = '<div class="banner">Connected to your Drive. No <span class="mono">IDP Dashboard</span> file yet: the first one arrives with the next 07:00 run. Showing the fictional sample until then.</div>'; return; }
+      S.bundles = {}; setDays(days, "live"); S.date = days[0].date; $("#day").value = S.date; S.idx = 0;
+      $("#notice").innerHTML = ""; render();
+      await fetchBundle(days[0]); render();
+      for (const d of days.slice(1, 7)) { try { await fetchBundle(d); } catch {} }
+      if (S.tab === "trends") render();
+    } catch (e) { useSample(connectorMessage(e)); }
+  }
+
+  /* events */
+  document.addEventListener("click", async ev => {
+    const t = ev.target.closest("[data-tab],[data-act],[data-open],[data-mf]");
+    if (!t) return;
+    if (t.dataset.tab) { S.tab = t.dataset.tab; store.set("tab", S.tab); render(); window.scrollTo({ top: 0 }); return; }
+    if (t.dataset.open) { S.idx = +t.dataset.open; S.tab = "round"; store.set("tab", "round"); render(); window.scrollTo({ top: 0 }); return; }
+    if (t.dataset.mf) { S.microFilter = t.dataset.mf; render(); return; }
+    if (!cur()) return;
+    const a = t.dataset.act, n = cur().patients.length;
+    if (a === "prev") S.idx = Math.max(0, S.idx - 1);
+    if (a === "next") S.idx = Math.min(n - 1, S.idx + 1);
+    if (a === "seen") toggleSeen();
+    if (a === "loadall") { t.disabled = true; t.textContent = "Loading"; for (const d of S.days.slice(0, 30)) { try { await fetchBundle(d); } catch {} } }
+    render();
+  });
+  function toggleSeen() {
+    const p = cur().patients[S.idx]; if (!p) return;
+    const s = seen(); s.has(p.pid) ? s.delete(p.pid) : (s.add(p.pid), S.idx = Math.min(cur().patients.length - 1, S.idx + 1)); setSeen(s);
+  }
+  document.addEventListener("keydown", ev => {
+    if (S.tab !== "round" || ev.target.closest("input,select,textarea")) return;
+    const n = cur() ? cur().patients.length : 0;
+    if (ev.key === "ArrowRight" || ev.key === "j") { S.idx = Math.min(n - 1, S.idx + 1); render(); }
+    else if (ev.key === "ArrowLeft" || ev.key === "k") { S.idx = Math.max(0, S.idx - 1); render(); }
+    else if (ev.key === " ") { ev.preventDefault(); toggleSeen(); render(); }
+  });
+  $("#day").addEventListener("change", async ev => {
+    S.date = ev.target.value; S.idx = 0;
+    const d = S.days.find(x => x.date === S.date);
+    if (!S.bundles[S.date] && d) { render(); try { await fetchBundle(d); } catch (e) { $("#notice").innerHTML = `<div class="banner warn">Could not open ${esc(d.title)}: ${esc(e.message || e.code)}</div>`; } }
+    render();
+  });
+  boot();
+})();
+</script>
