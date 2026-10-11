@@ -117,11 +117,16 @@ def read_entry(ws, s, e, rows, ref):
             "finalised": finalised, "courses": courses, "cultures": cultures}
 
 
-def compare(p, entry, ref):
+def compare(p, entry, ref, near=None):
     out = []
     add = lambda sev, code, key, msg: out.append({
         "id": "%s:%s:%s" % (code, p["pid"], key or "-"), "severity": sev, "code": code, "pid": p["pid"],
         "name": p["name"], "room": p["room"], "key": key, "message": msg})
+    if entry is None and near:
+        add("WARN", "X_AMS_NAME_MATCH_MRN_DIFFERS", "%s %d" % (near["sheet"], near["first_row"]),
+            "An AMS entry with this name but MRN %s is at %s row %d (the ID record has %s): same patient? Correct the "
+            "MRN in the sheet or on the list." % (near["mrn"] or "blank", near["sheet"], near["first_row"], p["mrn"] or "none"))
+        return out
     if entry is None:
         new = (p.get("days_on_service") or 0) <= 1
         add("INFO" if new else "WARN", "X_NOT_IN_AMS", "",
@@ -202,6 +207,13 @@ def run(a):
         names = [p["name"]] + list(p.get("aliases") or [])
         hit = A.find_entry(entries, (p["mrn"] or "").strip(), names)
         entry = read_entry(*hit, ref) if hit else None
+        near = None
+        if not hit:  # same name under another MRN: find_entry refuses it (MRNs are shared within families)
+            cands = [x for x in entries if any(A.name_match(str(x[3][x[1] - 1][A.C_NAME - 1].value or ""), n) for n in names)]
+            if cands:
+                ws, s0, e0, rows0 = cands[-1]
+                near = {"sheet": ws.title, "first_row": s0,
+                        "mrn": str(rows0[s0 - 1][A.C_MRN - 1].value or "").split(".")[0].strip()}
         if pid in off_list:
             # Off the list: only what the sheet still lacks matters, and only while the entry is open.
             if entry and not entry["finalised"]:
@@ -209,7 +221,7 @@ def run(a):
                 out["findings"] += [f for f in compare(p, entry, ref) if f["code"] == "X_CULTURE_NOT_IN_AMS"]
             continue
         out["patients"][p["pid"]] = entry
-        out["findings"] += compare(p, entry, ref)
+        out["findings"] += compare(p, entry, ref, near)
     os.makedirs(a.out, exist_ok=True)
     with open(os.path.join(a.out, "ams_check.json"), "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)

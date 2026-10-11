@@ -89,6 +89,7 @@ def build(run_dir, date):
     ver = load(os.path.join(o, "verification.json"), {}) or {}
     cultures = load(os.path.join(o, "cultures.json"), None)
     ams = load(os.path.join(o, "ams_check.json"), {}) or {}
+    blocks = load(os.path.join(o, "ams_blocks.json"), {}) or {}
     ams_entries = ams.get("patients") or {}
     ams_findings = ams.get("findings") or []
     render = load(os.path.join(o, "render.json"), {}) or {}
@@ -118,6 +119,7 @@ def build(run_dir, date):
         r["findings"] = [f for f in findings if f.get("pid") == pid]
         r["changes"] = changes.get(pid, [])
         r["days_on_service"] = (ref - dt.date.fromisoformat(r["first_seen"])).days + 1 if r["first_seen"] else None
+        r["ams_block"] = (blocks.get("patients") or {}).get(pid)
         e = ams_entries.get(pid)
         r["ams"] = ({k: e[k] for k in ("sheet", "first_row", "last_row", "finalised", "courses", "cultures")}
                     if e else None)
@@ -143,7 +145,11 @@ def build(run_dir, date):
         "archived_today": census.get("archived_today") or [],
         "delta": delta,
         "verification": {"counts": ver.get("counts") or {}, "findings": [f for f in findings if not f.get("pid")]},
-        "ams": {"sheets": ams.get("sheets") or [], "entries": ams.get("entries", 0), "checked": bool(ams)},
+        "ams": {"sheets": ams.get("sheets") or [], "entries": ams.get("entries", 0), "checked": bool(ams),
+                "blocks": bool(blocks)},
+        # Off the ID list in the last 14 days with their AMS entry still open: data keeps arriving until it is sealed.
+        "off_list_blocks": [{"pid": pid, "name": (recs.get(pid) or {}).get("name", ""), "block": bl}
+                            for pid, bl in (blocks.get("off_list") or {}).items()],
         "cultures": {"files": (cultures or {}).get("files") or [], "off_census": (cultures or {}).get("off_census") or []},
     }
 
