@@ -5,8 +5,9 @@
 
 One tab "Main sheet Sep 2026": header row, red separator rows between blocks, columns A:AH as in ams_rows.py.
   Alpha Tester One   (MRN 100001)  Mero ongoing (agrees), Vanco left "Ongoing" although the record gave a single
-                                    dose (X_AMS_COURSE_OPEN), urine culture 04/09 (agrees), blood culture 05/09 with
-                                    K. pneumoniae that the record lacks (X_AMS_CULTURE_NOT_ON_LIST)
+                                    dose (X_AMS_COURSE_OPEN), no row yet for the record's urine culture 04/09
+                                    (X_CULTURE_NOT_IN_AMS), blood culture 05/09 with K. pneumoniae that the record
+                                    lacks (X_AMS_CULTURE_NOT_ON_LIST)
   Bravo Tester Two   (MRN 100002)  entry shaded orange as finalised while still on the list (X_AMS_FINALISED_BUT_ACTIVE)
   Charlie Tester Three (100003)    no antimicrobial row while Erta runs (X_COURSE_NOT_IN_AMS)
 Every other census patient has no entry (X_NOT_IN_AMS).
@@ -48,8 +49,7 @@ def main(path):
 
     red()
     row(c2="CH", c5="Alpha Tester One", c6="100001", c7="70", c8="708B", c12=D(27, 8), c21="Urosepsis",
-        c22="Meropenem", c23=D(3, 9), c24="Ongoing", c30="04/09/26 Urine", c31="Final", c32="E. coli ESBL",
-        c33="R: Ceftriaxone; S: Meropenem")
+        c22="Meropenem", c23=D(3, 9), c24="Ongoing")
     row(c22="Vancomycin", c23=D(3, 9), c24="Ongoing", c30="05/09/26 Blood", c31="Final", c32="Klebsiella pneumoniae",
         c33="S: Meropenem")
     red()

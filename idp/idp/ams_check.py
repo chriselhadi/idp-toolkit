@@ -11,6 +11,9 @@ as ams_rows.py does) and compares:
   * cultures: a positive culture in the sheet (organism column filled, last 21 days) that today's micro list lacks
   * identity: the sheet's MRN against the record's; no entry at all; an entry already shaded as finalised while the
     patient is still on the service
+  * the other way round, what the record holds that the sheet does not yet: a resulted culture of the last 21 days
+    with no culture row in the entry (X_CULTURE_NOT_IN_AMS). Patients who left the ID list in the last 14 days and
+    whose entry is not finalised are checked too (P3: their data keeps arriving until the block is sealed).
 Findings carry codes starting with X_ and are informational: they never block a send. The workbook is never written.
 
 Writes out/ams_check.json: per patient the entry's location (tab, first and last row: the link between the daily
@@ -150,6 +153,16 @@ def compare(p, entry, ref):
             if last and (not c["start"] or last["end"] >= c["start"]):
                 add("WARN", "X_AMS_STOPPED_STILL_RUNNING", k, "AMS sheet closed %s on %s (row %d) but it is running "
                     "on today's record (D%d)." % (c["drug"], last["end"], last["row"], c["days"]))
+    for m in p["micro"]:
+        if not m["date"] or m["status"] in ("pending",) or (ref - dt.date.fromisoformat(m["date"])).days > CULTURE_WINDOW:
+            continue
+        fam = family(m["specimen"])
+        in_sheet = any(cx["date"] and abs((dt.date.fromisoformat(cx["date"]) - dt.date.fromisoformat(m["date"])).days) <= 1
+                       and (fam in ("", "other") or cx["family"] in (fam, "other", ""))
+                       for cx in entry["cultures"])
+        if not in_sheet:
+            add("INFO", "X_CULTURE_NOT_IN_AMS", "%s %s" % (m["date"], fam or "other"),
+                "Not yet in the AMS sheet (%s): %s." % (where, m["text"]))
     for cx in entry["cultures"]:
         if not cx["positive"] or not cx["date"]:
             continue
@@ -172,17 +185,29 @@ def run(a):
     entries = A.index_entries(wb)
     recs = {pid: patient_record(pid, r, ref) for pid, r in (state.get("patients") or {}).items()}
     out = {"date": a.date, "sheets": sorted({ws.title for ws, *_ in entries}), "entries": len(entries),
-           "patients": {}, "findings": []}
-    for cp in census.get("patients") or []:
-        p = recs.get(cp["pid"])
+           "patients": {}, "off_list": {}, "findings": []}
+    targets = [(cp["pid"], cp.get("room")) for cp in census.get("patients") or []]
+    on_census = {pid for pid, _ in targets}
+    for pid, r in recs.items():  # off the list in the last 14 days: still collecting data until the entry is sealed
+        if pid not in on_census and r["archived"] and str(r["archived"])[:10] >= (ref - dt.timedelta(days=14)).isoformat():
+            targets.append((pid, None))
+    off_list = {pid for pid, _ in targets} - on_census
+    for pid, room in targets:
+        p = recs.get(pid)
         if not p:
             continue
-        p["room"] = cp.get("room") or p["room"]
+        p["room"] = room or p["room"]
         first = p.get("first_seen")
         p["days_on_service"] = (ref - dt.date.fromisoformat(first)).days + 1 if first else None
         names = [p["name"]] + list(p.get("aliases") or [])
         hit = A.find_entry(entries, (p["mrn"] or "").strip(), names)
         entry = read_entry(*hit, ref) if hit else None
+        if pid in off_list:
+            # Off the list: only what the sheet still lacks matters, and only while the entry is open.
+            if entry and not entry["finalised"]:
+                out["off_list"][pid] = entry
+                out["findings"] += [f for f in compare(p, entry, ref) if f["code"] == "X_CULTURE_NOT_IN_AMS"]
+            continue
         out["patients"][p["pid"]] = entry
         out["findings"] += compare(p, entry, ref)
     os.makedirs(a.out, exist_ok=True)
@@ -190,8 +215,9 @@ def run(a):
         json.dump(out, f, ensure_ascii=False, indent=1)
     linked = sum(1 for v in out["patients"].values() if v)
     sev = {s: sum(1 for x in out["findings"] if x["severity"] == s) for s in ("WARN", "INFO")}
-    print("AMS CHECK OK: %d of %d census patients linked to an AMS entry (%d entries in %d tabs); %d to review, %d notes"
-          % (linked, len(out["patients"]), len(entries), len(out["sheets"]), sev["WARN"], sev["INFO"]))
+    print("AMS CHECK OK: %d of %d census patients linked to an AMS entry (%d entries in %d tabs); %d off-list entries "
+          "still open; %d to review, %d notes"
+          % (linked, len(out["patients"]), len(entries), len(out["sheets"]), len(out["off_list"]), sev["WARN"], sev["INFO"]))
 
 
 def main():
