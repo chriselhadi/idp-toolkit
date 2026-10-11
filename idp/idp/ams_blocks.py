@@ -85,11 +85,15 @@ def _find_cx_row(b, date, specimen):
     return None
 
 
+# Lab values and weight carry units that look like a dose ("1.2 mg/dL", "72 kg"); they are measurements, not doses.
+MEASURES = {"weight", "Creatinine", "CrCl", "Pertinent labs"}
+
+
 def apply_edits(b, edits, meta):
     """Apply one patient's edits (oldest first) to Block b. Records applied and refused edits in meta."""
     for e in sorted(edits, key=lambda x: x.get("at", "")):
         fields = {k: str(v).strip() for k, v in (e.get("fields") or {}).items() if k in COL and str(v).strip()}
-        bad = [v for v in fields.values() if DOSE_RE.search(v)]
+        bad = [v for h, v in fields.items() if h not in MEASURES and DOSE_RE.search(v)]
         if bad:
             meta["refused"].append({"id": e.get("id"), "why": "dose figure %r (frequencies only)" % bad[0]})
             continue
