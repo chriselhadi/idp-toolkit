@@ -111,6 +111,7 @@ grepcheck ams_open_course "X_AMS_COURSE_OPEN:P0001:vanco" out/ams_check.json
 grepcheck ams_culture_missing "X_AMS_CULTURE_NOT_ON_LIST:P0001:2026-09-05 blood" out/ams_check.json
 grepcheck ams_finalised_active "X_AMS_FINALISED_BUT_ACTIVE:P0002" out/ams_check.json
 grepcheck ams_course_not_in_sheet "X_COURSE_NOT_IN_AMS:P0003:erta" out/ams_check.json
+grepcheck ams_culture_not_in_sheet "X_CULTURE_NOT_IN_AMS:P0001:2026-09-04 urine" out/ams_check.json
 python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
 grepcheck export_ok "EXPORT OK: 10 patients, 11 files" export.txt
 grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
