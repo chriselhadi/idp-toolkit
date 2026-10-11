@@ -145,7 +145,7 @@ grepcheck verify_culture_missing "BLOCK E_CULTURE_MISSING:P0001:900101" verify_c
 # edits made in the app: collected from their Drive files, applied to the blocks and to the AMS rows book
 mkdir -p in/edits_dl
 cat > in/edits_dl/e1.json <<'JSON'
-{"v":1,"id":"t-1","pid":"P0001","at":"2026-09-06T20:01:00Z","by":"CH","kind":"patient","fields":{"weight":"72 kg","Attending":"Dr Test"}}
+{"v":1,"id":"t-1","pid":"P0001","at":"2026-09-06T20:01:00Z","by":"CH","kind":"patient","fields":{"weight":"72 kg","Creatinine":"1.2 mg/dL","Attending":"Dr Test"}}
 JSON
 cat > in/edits_dl/e2.json <<'JSON'
 {"v":1,"id":"t-2","pid":"P0001","at":"2026-09-06T20:02:00Z","by":"CH","kind":"abx","key":{"drug":"Vancomycin","start":"03/09/26"},"fields":{"Date ended":"03/09/26","Released by ID":"Yes"}}
@@ -172,7 +172,7 @@ b = json.load(open(sys.argv[1]))["patients"]
 a = b["P0001"]
 h = {x: i for i, x in enumerate(a["header"])}
 r0 = a["rows"][0]
-assert r0[h["weight"]] == "72 kg" and r0[h["Attending"]] == "Dr Test", "patient edit not applied"
+assert r0[h["weight"]] == "72 kg" and r0[h["Creatinine"]] == "1.2 mg/dL" and r0[h["Attending"]] == "Dr Test", "patient edit not applied"
 v = [r for r in a["rows"] if r[h["Actual antibiotics"]] == "Vancomycin"][0]
 assert v[h["Date ended"]] == "03/09/26" and v[h["Released by ID"]] == "Yes", "abx edit not applied"
 u = [r for r in a["rows"] if "UCx" in r[h["Culture results/Notes"]] or "Urine" in r[h["Culture results/Notes"]]]
