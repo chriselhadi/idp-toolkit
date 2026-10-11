@@ -45,6 +45,9 @@ def main(path):
         for col, v in cells.items():
             r[int(col[1:]) - 1] = v
         ws.append(r)
+        for c in ws[ws.max_row]:
+            if isinstance(c.value, dt.datetime):
+                c.number_format = "dd/mm/yy"  # the sheet's own date display (S5)
         return ws.max_row
 
     red()

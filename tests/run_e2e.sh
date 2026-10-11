@@ -112,18 +112,74 @@ grepcheck ams_culture_missing "X_AMS_CULTURE_NOT_ON_LIST:P0001:2026-09-05 blood"
 grepcheck ams_finalised_active "X_AMS_FINALISED_BUT_ACTIVE:P0002" out/ams_check.json
 grepcheck ams_course_not_in_sheet "X_COURSE_NOT_IN_AMS:P0003:erta" out/ams_check.json
 grepcheck ams_culture_not_in_sheet "X_CULTURE_NOT_IN_AMS:P0001:2026-09-04 urine" out/ams_check.json
+# edits made in the app: collected from their Drive files, applied to the blocks and to the AMS rows book
+mkdir -p in/edits_dl
+cat > in/edits_dl/e1.json <<'JSON'
+{"v":1,"id":"t-1","pid":"P0001","at":"2026-09-06T20:01:00Z","by":"CH","kind":"patient","fields":{"weight":"72 kg","Attending":"Dr Test"}}
+JSON
+cat > in/edits_dl/e2.json <<'JSON'
+{"v":1,"id":"t-2","pid":"P0001","at":"2026-09-06T20:02:00Z","by":"CH","kind":"abx","key":{"drug":"Vancomycin","start":"03/09/26"},"fields":{"Date ended":"03/09/26","Released by ID":"Yes"}}
+JSON
+cat > in/edits_dl/e3.json <<'JSON'
+{"v":1,"id":"t-3","pid":"P0001","at":"2026-09-06T20:03:00Z","by":"CH","kind":"culture","key":{"date":"04/09/26","specimen":"Urine"},"fields":{"Preliminary Results":"Final","Organism":"E. coli ESBL","Antibiogram":"R: Ceftriaxone; S: Meropenem"}}
+JSON
+cat > in/edits_dl/e4.json <<'JSON'
+{"v":1,"id":"t-4","pid":"P0001","at":"2026-09-06T20:04:00Z","by":"CH","kind":"patient","fields":{"notes":"Mero 1 g q8h"}}
+JSON
+cat > in/edits_dl/e5.json <<'JSON'
+{"v":1,"id":"t-5","pid":"P0001","at":"2026-09-06T20:05:00Z","by":"CH","kind":"finalise"}
+JSON
+cp in/edits_dl/e1.json in/edits_dl/e1_duplicate.json
+python3 "$I/edits.py" collect in/edits_dl in/edits.json | tee edits.txt
+grepcheck edits_collect "EDITS OK: 5 edits" edits.txt
+python3 "$I/edits.py" digest in/edits.json out/census.json > edits_digest.txt
+grepcheck edits_digest "708B Alpha Tester One abx [drug Vancomycin, start 03/09/26]" edits_digest.txt
+python3 "$I/ams_blocks.py" in/ams_fixture.xlsx out/state_new.json out/census.json out --date 2026-09-07 --edits in/edits.json | tee ams_blocks.txt
+grepcheck ams_blocks_ok "4 app edits applied, 1 refused" ams_blocks.txt
+python3 - out/ams_blocks.json <<'PY'
+import json, sys
+b = json.load(open(sys.argv[1]))["patients"]
+a = b["P0001"]
+h = {x: i for i, x in enumerate(a["header"])}
+r0 = a["rows"][0]
+assert r0[h["weight"]] == "72 kg" and r0[h["Attending"]] == "Dr Test", "patient edit not applied"
+v = [r for r in a["rows"] if r[h["Actual antibiotics"]] == "Vancomycin"][0]
+assert v[h["Date ended"]] == "03/09/26" and v[h["Released by ID"]] == "Yes", "abx edit not applied"
+u = [r for r in a["rows"] if "UCx" in r[h["Culture results/Notes"]] or "Urine" in r[h["Culture results/Notes"]]]
+assert u and u[0][h["Organism"]] == "E. coli ESBL", "culture edit not applied"
+assert not any("1 g" in c for r in a["rows"] for c in r), "a dose reached the block"
+assert a["ready_to_finalise"] and any(t["field"] == "Discharge Abx" for t in a["todo"]), "finalise checklist missing"
+assert a["refused"] and "dose" in a["refused"][0]["why"]
+assert b["P0013"]["status"] == "new" and b["P0013"]["location"] is None, "new patient has no drafted block"
+assert "\t" in a["tsv"] or "	" in a["tsv"]
+print("CHECK ams_blocks_edits OK")
+PY
+python3 "$I/ams_rows.py" in/ams_fixture.xlsx out/state_new.json out --date 2026-09-07 --fellow CH --census out/census.json --edits in/edits.json | tee ams_rows.txt
+grepcheck ams_rows_shared "AMS ROWS OK" ams_rows.txt
+python3 - out/AMS_rows_2026-09-07.xlsx <<'PY'
+import openpyxl, sys
+ws = openpyxl.load_workbook(sys.argv[1])["AMS rows"]
+vals = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
+assert "72 kg" in vals and "READY TO FINALISE" in " ".join(vals), "app edits missing from the AMS rows book"
+print("CHECK ams_rows_has_edits OK")
+PY
+python3 "$I/checks_R.py" ams out/AMS_rows_2026-09-07.xlsx | tee checks_ams.txt
+grepcheck ams_rows_checks_R "CHECKS R OK" checks_ams.txt
 python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
-grepcheck export_ok "EXPORT OK: 10 patients, 11 files" export.txt
+grepcheck export_ok "EXPORT OK: 10 patients," export.txt
 grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
 grepcheck export_ams_culture "2026-09-07,P0001,Main sheet Sep 2026,4,2026-09-05,blood" "out/export/tables/ams_cultures 2026-09-07.csv"
 python3 "$I/export.py" . --date 2026-09-07 --out export_split --part-chars 5000 | tee export_split.txt
 grepcheck export_split_parts "IDP Dashboard 2026-09-07 (part 1 of" export_split.txt
 python3 - export_split out/export <<'PY'
 import glob, json, os, re, sys
-parts = sorted(glob.glob(os.path.join(sys.argv[1], "IDP Dashboard 2026-09-07 (part * of *).json")),
-               key=lambda p: int(re.search(r"part (\d+) of", p).group(1)))
-joined = json.loads("".join(open(p, encoding="utf-8").read() for p in parts))
-whole = json.load(open(os.path.join(sys.argv[2], "IDP Dashboard 2026-09-07.json"), encoding="utf-8"))
+def day(folder):
+    """The day's file, whole or in parts, joined in part order."""
+    ps = glob.glob(os.path.join(folder, "IDP Dashboard 2026-09-07*.json"))
+    ps.sort(key=lambda p: int(re.search(r"part (\d+) of", p).group(1)) if "part" in p else 0)
+    return ps, json.loads("".join(open(p, encoding="utf-8").read() for p in ps))
+parts, joined = day(sys.argv[1])
+_, whole = day(sys.argv[2])
 joined.pop("generated"); whole.pop("generated")
 assert joined == whole, "parts do not rejoin to the whole file"
 for t in glob.glob(os.path.join(sys.argv[1], "tables", "*(part 1 of*).csv")):

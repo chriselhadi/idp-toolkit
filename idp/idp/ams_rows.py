@@ -2,6 +2,11 @@
 """AMS row-block refresh for Chris's own patients (agreed 30.09.2026).
 
   ams_rows.py <ams_spill.json|ams.xlsx> <state_new.json> <outdir> --date YYYY-MM-DD [--fellow CH]
+              [--census out/census.json] [--edits in/edits.json]
+
+With --census and/or --edits the blocks are built by ams_blocks.build_block (the same builder the app's daily file
+uses): empty age, CrCl and admission cells are filled from the AS list, and the edits made in the app are applied,
+so the book holds every update made in the app since the last run.
 
 For every patient on today's census whose fellow is --fellow, find their CURRENT entry in the AMS
 workbook (latest sheet, last entry of the matching block; an entry already shaded orange is still
@@ -248,6 +253,58 @@ def issue_head(dx):
     return h[:120]
 
 
+def indication(dx):
+    """Column U: the diagnosis sentence without its trailing (dd/mm), (prior) or (undated) (S5)."""
+    return re.sub(r"\s*\((\d{1,2}/\d{1,2}|prior|chronic|undated)\)\s*$", "", issue_head(dx))[:80]
+
+
+def full_date(s, today):
+    """'01/09' -> '01/09/26': the sheet writes dd/mm/yy (S5). The year puts the date at most 31 days ahead of today."""
+    d = ddmm(s or "")
+    if not d:
+        return s or ""
+    for y in (today.year, today.year - 1):
+        try:
+            v = datetime.date(y, d[1], d[0])
+        except ValueError:
+            return s
+        if v <= today + datetime.timedelta(days=31):
+            return v.strftime("%d/%m/%y")
+    return s
+
+
+SPECIMEN = [(r"\bucx\b|urine", "Urine"), (r"\bbcx\b|blood", "Blood"), (r"\bspx\b|sputum", "Sputum"),
+            (r"\bdta\b", "Deep tracheal aspirate"), (r"\bbal\b", "Bronchoalveolar lavage"),
+            (r"\bpf\b|pleural", "Pleural fluid"), (r"\brs\b|rectal", "Rectal swab"), (r"\bns\b|nasal", "Nasal swab"),
+            (r"\baxs\b|axill", "Axillary swab"), (r"\bss\b|stool", "Stool"), (r"\bcsf\b", "CSF"),
+            (r"\bkt\b|\btip\b|catheter", "Catheter tip"), (r"wound", "Wound"), (r"\bpus\b", "Pus"),
+            (r"drain", "Drain fluid"), (r"ascit", "Ascitic fluid"), (r"tissue|bone", "Tissue")]
+
+
+def split_micro(m, today):
+    """A micro line ('04/09 UCx E.coli ESBL') -> the sheet's four culture cells AD/AE/AF/AG (S5)."""
+    toks = (m or "").split(None, 2)
+    when = full_date(toks[0], today) if toks and ddmm(toks[0]) else ""
+    spec_tok = toks[1] if len(toks) > 1 else ""
+    rest = toks[2] if len(toks) > 2 else ""
+    spec = next((name for rx, name in SPECIMEN if re.search(rx, spec_tok.lower())), spec_tok)
+    low = rest.lower()
+    status = "Pending" if re.search(r"\bpend", low) else "Preliminary" if re.search(r"prelim|gram|flagged", low) else "Final"
+    result = re.sub(r"\b(pending|pend|prelim(inary)?|final)\b[:,]?", "", rest, flags=re.I).strip(" ,;:") or \
+        ("Pending" if status == "Pending" else "-")
+    result = re.sub(r"\bneg\b", "No growth", result, flags=re.I)
+    groups = {"R": [], "S": []}
+    pat = re.compile(r"\b([SR]) ((?:[A-Z][\w-]+)(?:\s*[/,]\s*[A-Z][\w-]+)*)")
+    for sr, drugs in pat.findall(rest):
+        groups[sr] += [d.strip() for d in re.split(r"[/,]", drugs) if d.strip()]
+    first = pat.search(rest)
+    if first:
+        result = rest[:first.start()].strip(" ,;:") or result
+    parts = ["%s: %s" % (k, ", ".join(groups[k])) for k in ("R", "S") if groups[k]]
+    ast = "; ".join(parts) if parts else "-"
+    return ("%s %s" % (when, spec)).strip(), status, result, ast
+
+
 ABBR = [(r"\bbcx\b", "blood culture"), (r"\bucx\b", "urine culture"), (r"\bcx\b", "culture"),
         (r"\bbal\b", "bronchoalveolar"), (r"\bcsf\b", "cerebrospinal"), (r"\bua\b", "urinalysis"),
         (r"\bsa\b", "stool analysis"), (r"\bpcr\b", "pcrx")]
@@ -333,13 +390,14 @@ def refresh(block, p, today, new_entry):
             if same:
                 i, _, hst, hend = same[-1]
                 if a["end"] and hend.lower() in ("", "ongoing"):
-                    block.set(i, C_END, a["end"])
+                    block.set(i, C_END, full_date(a["end"], today))
                     stops += 1
                 if hst is None and a["start"] and not block.cells[i][C_START - 1].strip():
-                    block.set(i, C_START, a["start"])
+                    block.set(i, C_START, full_date(a["start"], today))
                 continue
             label = " ".join(x for x in (DISPLAY.get(k, a["drug"]), a["route"], a["freq"]) if x)
-            new_rows.append((issue_head(iss.get("dx"))[:80], label, a["start"], a["end"] or "Ongoing"))
+            new_rows.append((indication(iss.get("dx")), label, full_date(a["start"], today),
+                             full_date(a["end"], today) if a["end"] else "Ongoing"))
             have.append((-1, k, st, a["end"]))
     if new_rows:
         block.add_rows((C_IND, C_ABX, C_START, C_END), new_rows)
@@ -350,15 +408,25 @@ def refresh(block, p, today, new_entry):
     add = []
     for m in sy.get("micro") or []:
         d = ddmm(m)
+        if not d:
+            continue  # undated ("prior ...") belongs to an earlier admission: not added to this entry
         w = words(m)
         if d:
             present = any(v in known for v in date_variants(d)) and any(x in known for x in w)
         else:
             present = not w or len(w & words(known)) / len(w) >= 0.5
         if not present:
-            add.append((m,))
+            row = split_micro(m, today)
+            twin = next((x for x in add if x[0] == row[0]), None)
+            if twin:  # same day and site (two blood sets, say): one row, results side by side
+                i = add.index(twin)
+                status = "Pending" if "Pending" in (twin[1], row[1]) else "Preliminary" if "Preliminary" in (twin[1], row[1]) else "Final"
+                ast = "; ".join(x for x in (twin[3], row[3]) if x != "-") or "-"
+                add[i] = (twin[0], status, "%s | %s" % (twin[2], row[2]), ast)
+            else:
+                add.append(row)
     if add:
-        block.add_rows((C_CX,), add)
+        block.add_rows((C_CX, C_CX + 1, C_CX + 2, C_CX + 3), add)
         block.log.append("cultures +%d" % len(add))
     # issues
     ptxt = block.col_text(C_ISSUES)
@@ -489,6 +557,12 @@ def main():
     today = datetime.date.fromisoformat(opt["--date"])
     fellow = opt.get("--fellow", "CH")
     state = json.load(open(st))
+    shared = "--census" in opt or "--edits" in opt
+    if shared:
+        import ams_blocks as B
+        cp_by = {c["pid"]: c for c in json.load(open(opt["--census"])).get("patients", [])} if "--census" in opt else {}
+        edits_by = B.load_edits(opt.get("--edits", ""))
+        pid_of = {id(v): k for k, v in state["patients"].items()}
     pats = [p for p in state["patients"].values()
             if (p.get("synth") or {}).get("_fellow") == fellow
             and ((p.get("active") and (p.get("synth") or {}).get("_date") == today.isoformat())
@@ -525,7 +599,27 @@ def main():
                     n_drop += 1
                     continue
             n_off += 1
-        if hit:
+        if shared:
+            pid = pid_of.get(id(p))
+            b, meta = B.build_block(p, entries, today, fellow, cp_by.get(pid), edits_by.get(pid))
+            if meta["location"]:
+                loc = meta["location"]
+                sub = "%s, rows %d to %d" % (loc["sheet"], loc["first_row"], loc["last_row"])
+                if meta["finalised"]:
+                    sub += "; NOTE this entry is shaded orange (closed) on the sheet: check whether a new entry is needed"
+                sub += (" (insert %d row%s below row %d before pasting)" % (meta["grow"], "s" if meta["grow"] > 1 else "", loc["last_row"])
+                        if meta["grow"] > 0 else " (same size, paste over it)")
+            else:
+                sub = "no entry found in the AMS sheet: new entry, paste where it belongs"
+                n_new += 1
+            if meta["applied"]:
+                sub += "; %d edit%s from the app applied" % (len(meta["applied"]), "s" if len(meta["applied"]) > 1 else "")
+            if meta["refused"]:
+                sub += "; %d app edit%s refused (%s)" % (len(meta["refused"]), "s" if len(meta["refused"]) > 1 else "", meta["refused"][0]["why"])
+            if meta["ready_to_finalise"]:
+                sub += "; READY TO FINALISE (marked in the app): paste, then shade the entry orange"
+            hit = meta["location"]
+        elif hit:
             ws, s, e, rows = hit
             fills = [[rgb(c) for c in rows[r - 1][:COLS]] + [None] * (COLS - len(rows[r - 1][:COLS]))
                      for r in range(s, e + 1)]
