@@ -112,6 +112,36 @@ grepcheck ams_culture_missing "X_AMS_CULTURE_NOT_ON_LIST:P0001:2026-09-05 blood"
 grepcheck ams_finalised_active "X_AMS_FINALISED_BUT_ACTIVE:P0002" out/ams_check.json
 grepcheck ams_course_not_in_sheet "X_COURSE_NOT_IN_AMS:P0003:erta" out/ams_check.json
 grepcheck ams_culture_not_in_sheet "X_CULTURE_NOT_IN_AMS:P0001:2026-09-04 urine" out/ams_check.json
+# micro digests (Daily_Cultures) read into structured results; a final culture missing from micro is an error
+mkdir -p in/cultures
+cat > "in/cultures/Cultures 2026-09-06.txt" <<'TXT'
+*Daily Report 06/09/2026*
+- 5001 *Alpha Tester One* (b. _1956_ | _708B_): Blood: GNB in 1 of 2 sets
+- 5002 *Echo Tester Five*: Urine: >100,000 col/ml GNB
+
+*Micro Digest 06/09/2026*
+*Alpha Tester One* (DOB _01/01/1956_ | MRN _100001_ | _R708B_)
+- [PRELIM] *Blood I* (SID _900101_, coll. _05/09_, DR 5001): flagged ⊕ 06/09, GNB.
+- [POS] *Urine* (SID _900102_, coll. _04/09_): >100,000 col/ml. Final 06/09.
+  - *_E. coli_ (ESBL)*: *S:* _Mero, Erta_, *R:* _Ceftri, Cipro_
+
+*Verify*
+- 900101: second set not photographed.
+TXT
+cat > "in/cultures/Cultures 2026-09-07.txt" <<'TXT'
+*Micro Digest 07/09/2026*
+*Alpha Tester One* (DOB _01/01/1956_ | MRN _100001_ | _R708B_)
+- [POS] *Blood I* (SID _900101_, coll. _05/09_, DR 5001): GNB. Final 07/09. Updated 07/09 (was PRELIM).
+  - *_Klebsiella pneumoniae_*: *S:* _Mero_, *R:* _Ceftri_
+- [SCREEN -] *Rectal* and *Nasal* (coll. _06/09_): all negative.
+TXT
+python3 "$I/cultures.py" in/cultures out/census.json out --date 2026-09-07 | tee cultures.txt
+grepcheck cultures_ok "CULTURES OK: 2 files, 3 specimens" cultures.txt
+grepcheck cultures_organism_phenotype "E. coli (ESBL)" out/cultures_packets.txt
+grepcheck cultures_packet "05/09 Blood I Klebsiella pneumoniae (R Ceftri; S Mero)" out/cultures_packets.txt
+python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json out/cultures.json verify_cx --date 2026-09-07 > verify_cx.txt || true
+grepcheck verify_culture_missing "BLOCK E_CULTURE_MISSING:P0001:900101" verify_cx.txt
+
 # edits made in the app: collected from their Drive files, applied to the blocks and to the AMS rows book
 mkdir -p in/edits_dl
 cat > in/edits_dl/e1.json <<'JSON'

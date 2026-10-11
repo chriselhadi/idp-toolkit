@@ -150,7 +150,9 @@ def build(run_dir, date):
         # Off the ID list in the last 14 days with their AMS entry still open: data keeps arriving until it is sealed.
         "off_list_blocks": [{"pid": pid, "name": (recs.get(pid) or {}).get("name", ""), "block": bl}
                             for pid, bl in (blocks.get("off_list") or {}).items()],
-        "cultures": {"files": (cultures or {}).get("files") or [], "off_census": (cultures or {}).get("off_census") or []},
+        "cultures": {"files": [f.get("title", "") if isinstance(f, dict) else f for f in (cultures or {}).get("files") or []],
+                     "off_census": (cultures or {}).get("off_census") or [],
+                     "verify": [v.get("line", "") for v in (cultures or {}).get("verify") or []][:50]},
     }
 
     T = {k: [] for k in TABLES}
