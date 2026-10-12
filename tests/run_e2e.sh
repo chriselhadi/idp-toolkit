@@ -236,6 +236,35 @@ assert len(text) < 0.75 * size, "the slim file is not smaller (%d vs %d)" % (len
 print("CHECK export_slim_round_trip OK (%d -> %d chars)" % (size, len(text)))
 PY
 
+# a day whose upload failed is rebuilt from Drive: the state, that day's tables and the AMS workbook
+mkdir -p "$W/rebuild"
+python3 "$I/rebuild_day.py" "$W/rebuild" --date 2026-09-07 --state out/state_new.json --tables out/export/tables \
+    --workbook in/ams_fixture.xlsx --edits in/edits.json | tee rebuild.txt
+grepcheck rebuild_ok "REBUILD OK: 2026-09-07, 10 patients" rebuild.txt
+python3 - "$I" out/export "$W/rebuild/out/export" <<'PY'
+import glob, json, os, re, sys
+sys.path.insert(0, sys.argv[1])
+import export
+def day(folder):
+    ps = sorted(glob.glob(os.path.join(folder, "IDP Dashboard 2026-09-07*.json")),
+                key=lambda p: int(re.search(r"part (\d+) of", p).group(1)) if "part" in p else 0)
+    return export.unslim(json.loads("".join(open(p, encoding="utf-8").read() for p in ps)))
+a, b = day(sys.argv[2]), day(sys.argv[3])
+pa, pb = {p["pid"]: p for p in a["patients"]}, {p["pid"]: p for p in b["patients"]}
+assert set(pa) == set(pb), "the rebuilt day lists other patients"
+for pid in pa:
+    for k in ("name", "mrn", "room", "group", "fellow", "new", "issues", "courses", "micro", "pendings", "status", "ams"):
+        assert pa[pid][k] == pb[pid][k], "%s: %s differs after the rebuild" % (pid, k)
+    # age, CrCl and admission date are prefilled from the AS list, which the state does not keep
+    h = a["patients"][0]["ams_block"]["header"] if a["patients"][0].get("ams_block") else []
+    skip = {h.index(x) for x in ("Age", "CrCl", "Date of Admission") if x in h}
+    cells = lambda p: [[c for i, c in enumerate(r) if i not in skip] for r in (p.get("ams_block") or {}).get("rows", [])]
+    assert cells(pa[pid]) == cells(pb[pid]), "%s: AMS block differs" % pid
+assert [f["id"] for f in a["verification"]["findings"]] == [f["id"] for f in b["verification"]["findings"]]
+assert b["run_status"].startswith("REBUILT"), "the rebuilt day does not say so"
+print("CHECK rebuild_matches_original OK (%d patients)" % len(pa))
+PY
+
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
 mkdir -p "$CH"; cd "$CH"
 python3 "$I/drive_state.py" patch "$D1/out/state_new.json" "$D2/out/state_new.json" patch | tee patch.txt
