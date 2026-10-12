@@ -31,6 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from datamodel import patient_record  # noqa: E402
+import ams_rows as A  # noqa: E402
 
 SCHEMA_VERSION = 1  # additive fields (ams) keep schema 1: readers ignore what they do not know
 WARD_ORDER = ["7th floor", "ICU#B", "4th floor", "ICU#D", "3rd floor", "2nd floor", "SCT", "CCU/CSU", "ER IN", "Paeds"]
@@ -205,6 +206,55 @@ def build(run_dir, date):
     return bundle, {k: csv_text(v, TABLES[k]) for k, v in T.items()}
 
 
+def slim(bundle):
+    """The daily file without what the app rebuilds exactly, so it needs fewer parts to upload (each part is one
+    upload the run has to get through):
+      - a patient's "courses": the drugs of each issue followed by "abx_other", in that order (datamodel);
+      - each AMS block's "header" (once, as "ams_header"), its "tsv" (the rows joined by tabs and newlines) and its
+        build "log" (it stays in ams_blocks.json and the AMS rows book).
+    The app restores courses, header and tsv when it reads the file (lib/idp/drive.server)."""
+    out = dict(bundle)
+    out["slim"] = 1
+    out["ams_header"] = A.HEAD
+
+    def blk(b):
+        if not b:
+            return b
+        x = {k: v for k, v in b.items() if k not in ("header", "tsv", "log")}
+        # a to-do line that only says "<field> is empty" (or "<drug>: <field> is empty") is rebuilt from row and field
+        x["todo"] = [{k: v for k, v in t.items() if not (k == "what" and v == todo_text(b["rows"], t))} for t in b["todo"]]
+        return x
+    out["patients"] = [{**{k: v for k, v in p.items() if k != "courses"}, "ams_block": blk(p.get("ams_block"))}
+                       for p in bundle["patients"]]
+    out["off_list_blocks"] = [{**o, "block": blk(o.get("block"))} for o in bundle.get("off_list_blocks") or []]
+    return out
+
+
+def todo_text(rows, t):
+    """The default wording of a to-do line (ams_blocks.todo): "<field> is empty", on a drug row "<drug>: ..."."""
+    drug = (rows[t["row"]][A.C_ABX - 1].strip() if t["row"] < len(rows) else "") if t["row"] > 0 or t["field"] in (
+        "Indication/ID Diagnosis", "Actual antibiotics", "Date started", "Date ended", "Released by ID", "Duration advice") else ""
+    return "%s: %s is empty" % (drug, t["field"]) if drug else "%s is empty" % t["field"]
+
+
+def unslim(b):
+    """What the app does on reading: the inverse of slim(). Kept here so the test proves the round trip."""
+    out = dict(b)
+    head = b.get("ams_header") or []
+
+    def blk(x):
+        if not x:
+            return x
+        return {**x, "header": head, "todo": [{**t, "what": t.get("what", todo_text(x["rows"], t))} for t in x["todo"]],
+                "tsv": "\n".join("\t".join(c.replace("\t", " ").replace("\n", " ") for c in row) for row in x["rows"])}
+    out["patients"] = [{**p, "courses": [c for it in p["issues"] for c in it["abx"]] + p["abx_other"],
+                        "ams_block": blk(p.get("ams_block"))} for p in b["patients"]]
+    out["off_list_blocks"] = [{**o, "block": blk(o.get("block"))} for o in b.get("off_list_blocks") or []]
+    for k in ("slim", "ams_header"):
+        out.pop(k, None)
+    return out
+
+
 def split_text(txt, limit):
     """Consecutive slices of at most `limit` characters."""
     return [txt[i:i + limit] for i in range(0, len(txt), limit)] or [""]
@@ -247,7 +297,7 @@ def main():
         shutil.rmtree(out)  # a re-run must not leave parts of an earlier split behind
     os.makedirs(os.path.join(out, "tables"), exist_ok=True)
     bundle, tables = build(a.run_dir, a.date)
-    text = json.dumps(bundle, ensure_ascii=False, separators=(",", ":"))
+    text = json.dumps(slim(bundle), ensure_ascii=False, separators=(",", ":"))
     files = write_parts(out, "IDP Dashboard %s" % a.date, ".json", split_text(text, a.part_chars))
     for k, txt in tables.items():
         files += write_parts(os.path.join(out, "tables"), "%s %s" % (k, a.date), ".csv", split_csv(txt, a.part_chars))
