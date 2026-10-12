@@ -141,6 +141,12 @@ grepcheck cultures_organism_phenotype "E. coli (ESBL)" out/cultures_packets.txt
 grepcheck cultures_packet "05/09 Blood I Klebsiella pneumoniae (R Ceftri; S Mero)" out/cultures_packets.txt
 python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json out/cultures.json verify_cx --date 2026-09-07 > verify_cx.txt || true
 grepcheck verify_culture_missing "BLOCK E_CULTURE_MISSING:P0001:900101" verify_cx.txt
+# an archive-only result with no organism (a negative) must not break the reader, and is not a blocking finding
+printf 'SID\tPatient\tDOB\tMRN\tUnit\tSpecimen\tCollected\tStatus\tResult\tOrganism\tAST S\tAST R\tAST notes\tSign-off\tDaily Report no.\tFirst reported\tLast updated\n900199\tAlpha Tester One\t01/01/1956\t100001\tR708B\tUrine\t06/09\tNEG\t\t\t\t\t\t07/09\t\t\t\n' > in/cx_archive.tsv
+python3 "$I/cultures.py" in/cultures out/census.json out_cxa --date 2026-09-07 --archive in/cx_archive.tsv | tee cultures_archive.txt
+grepcheck cultures_archive_only_row "CULTURES OK: 2 files, 4 specimens" cultures_archive.txt
+python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json out_cxa/cultures.json verify_cxa --date 2026-09-07 > verify_cxa.txt || true
+if grep -q "BLOCK E_CULTURE_MISSING:P0001:900199" verify_cxa.txt; then fail culture_negative_not_blocking "a negative blocked"; else echo "CHECK culture_negative_not_blocking OK"; fi
 
 # edits made in the app: collected from their Drive files, applied to the blocks and to the AMS rows book
 mkdir -p in/edits_dl
