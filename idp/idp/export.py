@@ -221,6 +221,10 @@ def slim(bundle):
         if not b:
             return b
         x = {k: v for k, v in b.items() if k not in ("header", "tsv", "log")}
+        # rows sparse: {column index: value} for the filled cells only, with the row width once. Long runs of empty
+        # cells were miscounted when the file was copied into an upload (12.10: 131 empty cells came back as 129-145).
+        x["width"] = max((len(r) for r in b["rows"]), default=0)
+        x["rows"] = [{str(i): c for i, c in enumerate(r) if c != ""} for r in b["rows"]]
         # a to-do line that only says "<field> is empty" (or "<drug>: <field> is empty") is rebuilt from row and field
         x["todo"] = [{k: v for k, v in t.items() if not (k == "what" and v == todo_text(b["rows"], t))} for t in b["todo"]]
         return x
@@ -245,6 +249,9 @@ def unslim(b):
     def blk(x):
         if not x:
             return x
+        rows = [[r.get(str(i), "") for i in range(x["width"])] for r in x["rows"]] if x.get("width") is not None else x["rows"]
+        x = {k: v for k, v in x.items() if k != "width"}
+        x["rows"] = rows
         return {**x, "header": head, "todo": [{**t, "what": t.get("what", todo_text(x["rows"], t))} for t in x["todo"]],
                 "tsv": "\n".join("\t".join(c.replace("\t", " ").replace("\n", " ") for c in row) for row in x["rows"])}
     out["patients"] = [{**p, "courses": [c for it in p["issues"] for c in it["abx"]] + p["abx_other"],
@@ -297,7 +304,9 @@ def main():
         shutil.rmtree(out)  # a re-run must not leave parts of an earlier split behind
     os.makedirs(os.path.join(out, "tables"), exist_ok=True)
     bundle, tables = build(a.run_dir, a.date)
-    text = json.dumps(slim(bundle), ensure_ascii=False, separators=(",", ":"))
+    # ASCII only: every accented letter or non-breaking space is written as \\uXXXX, so the text survives being
+    # copied into an upload (a copied non-breaking space came back as a plain space on 12.10)
+    text = json.dumps(slim(bundle), ensure_ascii=True, separators=(",", ":"))
     files = write_parts(out, "IDP Dashboard %s" % a.date, ".json", split_text(text, a.part_chars))
     for k, txt in tables.items():
         files += write_parts(os.path.join(out, "tables"), "%s %s" % (k, a.date), ".csv", split_csv(txt, a.part_chars))
