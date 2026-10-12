@@ -217,6 +217,24 @@ for t in glob.glob(os.path.join(sys.argv[1], "tables", "*(part 1 of*).csv")):
 print("CHECK export_split_rejoins OK (%d parts)" % len(parts))
 PY
 grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,5,1" "out/export/tables/abx_courses 2026-09-07.csv"
+python3 - "$I" out/export <<'PY'
+import glob, json, os, re, sys
+sys.path.insert(0, sys.argv[1])
+import export
+ps = sorted(glob.glob(os.path.join(sys.argv[2], "IDP Dashboard 2026-09-07*.json")),
+            key=lambda p: int(re.search(r"part (\d+) of", p).group(1)) if "part" in p else 0)
+text = "".join(open(p, encoding="utf-8").read() for p in ps)
+full, _ = export.build(".", "2026-09-07")
+for p in full["patients"]:
+    if p.get("ams_block"): p["ams_block"].pop("log", None)
+for o in full["off_list_blocks"]: o["block"].pop("log", None)
+back = export.unslim(json.loads(text))
+back.pop("generated"); full.pop("generated")
+assert back == full, "the app cannot rebuild the full record from the slim file"
+size = len(json.dumps(full, ensure_ascii=False, separators=(",", ":")))
+assert len(text) < 0.75 * size, "the slim file is not smaller (%d vs %d)" % (len(text), size)
+print("CHECK export_slim_round_trip OK (%d -> %d chars)" % (size, len(text)))
+PY
 
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
 mkdir -p "$CH"; cd "$CH"
