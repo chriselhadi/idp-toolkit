@@ -291,6 +291,35 @@ assert b["run_status"].startswith("REBUILT"), "the rebuilt day does not say so"
 print("CHECK rebuild_matches_original OK (%d patients)" % len(pa))
 PY
 
+# the upload goes to the app as bytes (no retyping): a stand-in for the app's upload address answers with Drive's md5
+python3 "$I/export.py" . --date 2026-09-07 --out export_whole --part-chars 0 | tee export_whole.txt
+grepcheck export_whole_one_file "IDP Dashboard 2026-09-07.json" export_whole.txt
+cat > fake_app.py <<'PY'
+import hashlib, http.server, json, sys, urllib.parse
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        if q.get("ticket") != ["ab" * 16]:
+            out, code = {"ok": False, "error": "no valid ticket"}, 403
+        else:
+            stored = body[:-1] + b" " if q["name"][0].startswith("verification") else body  # a corrupted copy
+            out, code = {"ok": True, "id": "x", "size": len(stored), "md5": hashlib.md5(stored).hexdigest()}, 200
+        b = json.dumps(out).encode(); self.send_response(code); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(("127.0.0.1", 0), H); print(s.server_port, flush=True); s.serve_forever()
+PY
+python3 fake_app.py > fake_port.txt & FAKE=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s fake_port.txt ] && break; sleep 0.2; done
+APPURL="http://127.0.0.1:$(cat fake_port.txt)"
+python3 "$I/idp_upload.py" send --ticket "$(printf 'ab%.0s' $(seq 16))" --app "$APPURL" "export_whole/IDP Dashboard 2026-09-07.json" "export_whole/tables/patient_days 2026-09-07.csv" | tee upload_ok.txt
+grepcheck upload_ok "UPLOAD OK: 2 of 2 files" upload_ok.txt
+python3 "$I/idp_upload.py" send --ticket "$(printf 'ab%.0s' $(seq 16))" --app "$APPURL" "export_whole/tables/verification 2026-09-07.csv" > upload_bad.txt || true
+grepcheck upload_md5_mismatch_caught "UPLOAD FAILED: 1 of 1 files" upload_bad.txt
+python3 "$I/idp_upload.py" send --ticket "$(printf 'cd%.0s' $(seq 16))" --app "$APPURL" "export_whole/IDP Dashboard 2026-09-07.json" > upload_noticket.txt || true
+grepcheck upload_ticket_refused "no valid ticket" upload_noticket.txt
+kill $FAKE 2>/dev/null || true
+
 # ---------------- Drive state chain: day-1 full state + day-2 patch ----------------
 mkdir -p "$CH"; cd "$CH"
 python3 "$I/drive_state.py" patch "$D1/out/state_new.json" "$D2/out/state_new.json" patch | tee patch.txt
