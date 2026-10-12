@@ -42,7 +42,7 @@ S_RE = re.compile(r"\*S:\*\s*_([^_]+)_")
 R_RE = re.compile(r"\*R:\*\s*_([^_]+)_")
 I_RE = re.compile(r"\*I:\*\s*_([^_]+)_")
 STATUS = {"POS": "POS", "PRELIM": "PRELIM", "SCREEN +": "SCREEN+", "SCREEN -": "SCREEN-", "NEG": "NEG"}
-FAMILIES = (("blood", r"blood|bcx|bactec|bl\b"), ("urine", r"urine|ucx"), ("respiratory", r"sput|dta|\bbal\b|trache|bronch|resp"),
+FAMILIES = (("blood", r"blood|bcx|bactec|\bbl\b"), ("urine", r"urine|ucx"), ("respiratory", r"sput|dta|\bbal\b|trache|bronch|resp"),
             ("screen", r"rectal|nasal|nose|axill|\bax\b|ing|screen|mdro|throat"), ("stool", r"stool|c\.? ?diff|feces"),
             ("csf", r"csf"), ("catheter", r"tip|catheter|\bkt\b"), ("wound", r"wound|pus|swab|abscess|tissue|bone"),
             ("fluid", r"pleural|ascit|fluid|drain|synov|perito"))
@@ -284,7 +284,8 @@ def run(a):
     archived = read_archive(a.archive, ref)
     for s in archived:  # the archive sheet's finalised row wins
         prev = by_sid.get(s["sid"])
-        by_sid[s["sid"]] = {**(prev or {}), **{k: v for k, v in s.items() if v not in ("", None, [])}}
+        # an archive row with no organism or result keeps those fields (empty), so every specimen has every field
+        by_sid[s["sid"]] = {**s, **(prev or {}), **{k: v for k, v in s.items() if v not in ("", None, [])}}
     specimens = sorted(by_sid.values(), key=lambda s: (s.get("mrn") or "", s.get("collected") or ""), reverse=True)
     mrns = {str(c.get("mrn") or "").strip(): c for c in census.get("patients") or [] if c.get("mrn")}
     on = [s for s in specimens if s.get("mrn") in mrns]

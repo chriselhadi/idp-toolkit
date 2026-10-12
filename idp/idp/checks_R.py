@@ -2,7 +2,7 @@
 """Checks R (Chris, 07.10.2026). Run before ANY send or Drive write; every FAIL blocks it.
   checks_R.py text <file> [...]        no doses, no em/en dashes (handout.html, recap_email.txt, delta2.*, id_list_email.txt)
   checks_R.py idlist <id_list_email.txt>  ID list line format
-  checks_R.py ams <AMS_rows_*.xlsx>    AMS rows layout of every changed (green) cell
+  checks_R.py ams <AMS_rows_*.xlsx>    AMS rows layout of every changed (green) cell, on every rows sheet
 Prints CHECKS R OK or one FAIL line per problem (exit 1)."""
 import sys, re
 DOSE = re.compile(r"\b\d+(?:[.,]\d+)?\s?(?:mg|g|gr|mcg|µg|ug|IU|MU|units?|mL/kg|mg/kg)\b(?!/dL)|\b\d{3,4}\s?(?:x1|once|OD|BID|TID|q\d+h)\b|\bloading dose of\s*\d|\(\s*\d{3,4}\b(?![,.]\d)|\b\d{3,4}\s+(?:proph|from|then|load|daily|once)\b|\bthen \d{2,4}\b(?!\s*(?:col|/))", re.I)
@@ -32,8 +32,18 @@ def idlist(p):
         if ln.endswith(" ?"):
             warns.append("ID list initials '?': take them from the email, else yesterday's list, else the AMS last entry; report if still unknown: %r" % ln)
 def ams(p):
+    """Every rows sheet of the book: "AMS rows" (Chris's blocks) and, when present, "Other residents"."""
     import openpyxl
-    ws = openpyxl.load_workbook(p)["AMS rows"]
+    wb = openpyxl.load_workbook(p)
+    for name in ("AMS rows", "Other residents"):
+        if name in wb.sheetnames:
+            n = len(fails)
+            ams_sheet(wb[name])
+            if name != "AMS rows":
+                fails[n:] = ["%s: %s" % (name, f) for f in fails[n:]]
+
+
+def ams_sheet(ws):
     G = "FFD9F2D0"
     col = lambda r, c: ws.cell(r, c)
     seen = {}

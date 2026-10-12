@@ -215,23 +215,46 @@ def run(a):
             F.add("ERROR", "E_UPDATE_MISSED", pid, "", "updates say no change, but: " + "; ".join(x["text"] for x in ch),
                   n, room)
 
-    # Daily_Cultures: every final result for a census patient is carried
+    # Daily_Cultures: every final result of the current stay for a census patient is carried. A result counts as
+    # carried when micro holds the same specimen family (blood = BCx, urine = UCx...) collected within a day of it.
+    # Only positives block; a negative left out of micro is a note (negatives are often summarised). Results from
+    # before the stay (older than the patient's first day on service, or than 30 days) are history, not checked.
     if cultures:
+        from cultures import family
         by_mrn = {str(cp.get("mrn") or ""): pid for pid, cp in cpat.items() if cp.get("mrn")}
+        today = dt.date.fromisoformat(a.date)
         for row in cultures.get("specimens") or []:
             pid = by_mrn.get(str(row.get("mrn") or ""))
-            if not pid or row.get("status") in ("PRELIM",) or not row.get("final"):
+            if not pid or row.get("status") in ("PRELIM",) or not row.get("final") or not row.get("collected"):
                 continue
-            r = cur_recs.get(pid)
-            coll = row.get("collected") or ""
-            spec = norm(row.get("specimen_short") or row.get("specimen") or "")
-            hit = any(m["date"] == coll and (not spec or spec.split(" ")[0] in norm(m["specimen"] + " " + m["result"]))
-                      for m in (r or {}).get("micro", []))
-            if not hit:
-                F.add("ERROR", "E_CULTURE_MISSING", pid, row.get("sid", ""), "final %s %s (SID %s, %s) from %s is not "
-                      "in micro" % (row.get("specimen", ""), coll, row.get("sid", ""), row.get("status", ""),
-                                    row.get("source", "Daily_Cultures")), (r or {}).get("name", ""),
-                      (r or {}).get("room", ""))
+            r = cur_recs.get(pid) or {}
+            coll = dt.date.fromisoformat(row["collected"])
+            start = max(today - dt.timedelta(days=30), dt.date.fromisoformat(r["first_seen"]) - dt.timedelta(days=3)
+                        if r.get("first_seen") else today - dt.timedelta(days=30))
+            if coll < start:
+                continue
+            fam = row.get("specimen_short") or family(row.get("specimen", ""))
+
+            def same(m):
+                if m.get("date"):
+                    try:
+                        if abs((dt.date.fromisoformat(m["date"]) - coll).days) > 1:
+                            return False
+                    except ValueError:
+                        return False
+                elif not m.get("prior"):
+                    return False
+                mf = family(m.get("specimen", ""))
+                if mf in ("", "other"):
+                    mf = family(m.get("specimen", "") + " " + m.get("result", ""))
+                return not fam or fam == "other" or mf == fam
+            if any(same(m) for m in r.get("micro", [])):
+                continue
+            positive = row.get("status") in ("POS", "SCREEN+")
+            F.add("ERROR" if positive else "INFO", "E_CULTURE_MISSING" if positive else "I_CULTURE_NEG_NOT_LISTED",
+                  pid, row.get("sid", ""), "final %s %s (SID %s, %s) from %s is not in micro"
+                  % (row.get("specimen", ""), row["collected"], row.get("sid", ""), row.get("status", ""),
+                     row.get("source", "Daily_Cultures")), r.get("name", ""), r.get("room", ""))
 
     # AS list sanity: census and list agree on who is on restricted therapy
     if as_today:

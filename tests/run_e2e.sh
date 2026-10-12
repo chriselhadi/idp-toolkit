@@ -40,7 +40,9 @@ pycheck as_rows_today 2026-09-06 100090 100011
 python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-06 | tee as_gate.txt
 grepcheck as_gate_ok "AS GATE OK" as_gate.txt
 python3 "$I/as_gate.py" in/as_today.json in/as_today.json 2026-09-06 > as_gate2.txt || true
-grepcheck as_gate_identical "AS GATE WAIT: today's list is identical" as_gate2.txt
+grepcheck as_gate_identical "identical to yesterday's list (noted)" as_gate2.txt
+python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-08 > as_gate3.txt || true
+grepcheck as_gate_not_today "AS GATE WAIT" as_gate3.txt
 python3 "$I/match.py" MISSING in/as_today.json in/wards.json in/ams.json out --date 06.09.2026 --roster in/roster.txt
 pycheck roster_lines
 pycheck blank_bed_keeps_roster_room
@@ -141,6 +143,12 @@ grepcheck cultures_organism_phenotype "E. coli (ESBL)" out/cultures_packets.txt
 grepcheck cultures_packet "05/09 Blood I Klebsiella pneumoniae (R Ceftri; S Mero)" out/cultures_packets.txt
 python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json out/cultures.json verify_cx --date 2026-09-07 > verify_cx.txt || true
 grepcheck verify_culture_missing "BLOCK E_CULTURE_MISSING:P0001:900101" verify_cx.txt
+# an archive-only result with no organism (a negative) must not break the reader, and is not a blocking finding
+printf 'SID\tPatient\tDOB\tMRN\tUnit\tSpecimen\tCollected\tStatus\tResult\tOrganism\tAST S\tAST R\tAST notes\tSign-off\tDaily Report no.\tFirst reported\tLast updated\n900199\tAlpha Tester One\t01/01/1956\t100001\tR708B\tUrine\t06/09\tNEG\t\t\t\t\t\t07/09\t\t\t\n' > in/cx_archive.tsv
+python3 "$I/cultures.py" in/cultures out/census.json out_cxa --date 2026-09-07 --archive in/cx_archive.tsv | tee cultures_archive.txt
+grepcheck cultures_archive_only_row "CULTURES OK: 2 files, 4 specimens" cultures_archive.txt
+python3 "$I/verify_days.py" "$D1/out/state_new.json" out/state_new.json out/census.json in/as_today.json out_cxa/cultures.json verify_cxa --date 2026-09-07 > verify_cxa.txt || true
+if grep -q "BLOCK E_CULTURE_MISSING:P0001:900199" verify_cxa.txt; then fail culture_negative_not_blocking "a negative blocked"; else echo "CHECK culture_negative_not_blocking OK"; fi
 
 # edits made in the app: collected from their Drive files, applied to the blocks and to the AMS rows book
 mkdir -p in/edits_dl
@@ -195,6 +203,24 @@ print("CHECK ams_rows_has_edits OK")
 PY
 python3 "$I/checks_R.py" ams out/AMS_rows_2026-09-07.xlsx | tee checks_ams.txt
 grepcheck ams_rows_checks_R "CHECKS R OK" checks_ams.txt
+# every resident's blocks in one book (Y2): Chris's sheet unchanged, the others grouped by fellow, both checked
+mkdir -p out_all
+python3 "$I/ams_rows_all.py" in/ams_fixture.xlsx out/state_new.json out_all --date 2026-09-07 --fellow CH --census out/census.json --edits in/edits.json | tee ams_rows_all.txt
+grepcheck ams_rows_all_ok "AMS ROWS ALL OK" ams_rows_all.txt
+python3 - out/AMS_rows_2026-09-07.xlsx out_all/AMS_rows_2026-09-07.xlsx <<'PY'
+import sys, openpyxl
+one, allb = openpyxl.load_workbook(sys.argv[1]), openpyxl.load_workbook(sys.argv[2])
+assert allb.sheetnames == ["AMS rows", "Other residents", "Summary"], allb.sheetnames
+grid = lambda ws: [[c.value for c in r] for r in ws.iter_rows()]
+assert grid(one["AMS rows"]) == grid(allb["AMS rows"]), "Chris's sheet differs from ams_rows.py"
+labels = [r[0] for r in grid(allb["Other residents"]) if isinstance(r[0], str) and r[0].startswith("Fellow: ")]
+titles = [r[0] for r in grid(allb["Other residents"]) if isinstance(r[0], str) and "|" in r[0]]
+assert labels and titles, "no other resident's blocks"
+assert not any("CH" == l.split(": ")[1] for l in labels), "Chris listed among the others"
+print("CHECK ams_rows_all_layout OK (%d groups, %d blocks)" % (len(labels), len(titles)))
+PY
+python3 "$I/ams_rows_all.py" --check out_all/AMS_rows_2026-09-07.xlsx | tee ams_rows_all_check.txt
+grepcheck ams_rows_all_check "AMS ROWS ALL OK" ams_rows_all_check.txt
 python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
 grepcheck export_ok "EXPORT OK: 10 patients," export.txt
 grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
