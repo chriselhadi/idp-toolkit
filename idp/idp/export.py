@@ -263,12 +263,16 @@ def unslim(b):
 
 
 def split_text(txt, limit):
-    """Consecutive slices of at most `limit` characters."""
+    """Consecutive slices of at most `limit` characters; limit 0 = one whole file (uploaded through the app)."""
+    if limit <= 0:
+        return [txt]
     return [txt[i:i + limit] for i in range(0, len(txt), limit)] or [""]
 
 
 def split_csv(txt, limit):
-    """Complete CSVs (header + whole rows) of at most `limit` characters each."""
+    """Complete CSVs (header + whole rows) of at most `limit` characters each; limit 0 = one whole file."""
+    if limit <= 0:
+        return [txt]
     lines = txt.splitlines(keepends=True)
     head, rows = lines[0], lines[1:]
     parts, cur = [], head
