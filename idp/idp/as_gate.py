@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""AS list gate (overlay 8, 07.10.2026, Chris's decision D2).
+"""AS list gate (overlay 8, 07.10.2026; amendment Y1, Chris 11.10.2026).
 
   as_gate.py <as_today.json> <as_yday.json|MISSING> <YYYY-MM-DD>
 
-AS GATE OK (exit 0) only when the list was parsed from a spreadsheet attachment whose name carries
-today's date (dd.mm.yyyy, any prefix) AND it differs from yesterday's list (MRN, room, drug, frequency).
-Otherwise AS GATE WAIT (exit 3) with the reason: fetch the AS list again at once, then every 10 minutes
-until today's new list arrives.
+Today's AS List email always carries today's updated list, inline in the body or attached. So the list passes
+(AS GATE OK, exit 0) when it was received today (received_date) and the email subject, the attachment name or the
+source carries today's date (dd.mm.yyyy), whatever the source (attachment or body). A list identical to
+yesterday's passes too, with a note. AS GATE WAIT (exit 3) only when no AS list received today exists yet: fetch
+again at once, then every 10 minutes.
 """
 import sys, json, os
 
@@ -25,11 +26,17 @@ def main():
     a = json.load(open(t, encoding="utf-8"))
     src = a.get("source_used") or ""
     dmy = "%s.%s.%s" % (day[8:10], day[5:7], day[:4])
-    if not (src.startswith("attachment:") and dmy in src):
-        print("AS GATE WAIT: source is %r, not an attachment named %s" % (src, dmy)); return 3
-    if y != "MISSING" and os.path.exists(y) and key(a) == key(json.load(open(y, encoding="utf-8"))):
-        print("AS GATE WAIT: today's list is identical to yesterday's (%d order rows)" % len(key(a))); return 3
-    print("AS GATE OK: %s, %d patients, differs from yesterday" % (src, len(a.get("patients", []))))
+    received = a.get("received_date")
+    dated = any(dmy in str(x or "") for x in (a.get("subject"), src, a.get("filename_date")))
+    if received and received != day:
+        print("AS GATE WAIT: the newest AS list was received %s, not today (%s)" % (received, day)); return 3
+    if not (received == day or dated):
+        print("AS GATE WAIT: no AS list received today (%s); source %r" % (dmy, src)); return 3
+    if not a.get("patients"):
+        print("AS GATE WAIT: today's AS list parsed to no patients (%s)" % src); return 3
+    same = y != "MISSING" and os.path.exists(y) and key(a) == key(json.load(open(y, encoding="utf-8")))
+    print("AS GATE OK: %s, %d patients, %s" % (src, len(a.get("patients", [])),
+                                                "identical to yesterday's list (noted)" if same else "differs from yesterday"))
     return 0
 
 

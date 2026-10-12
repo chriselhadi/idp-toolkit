@@ -507,41 +507,64 @@ def letters(i):
 
 def write_xlsx(path, items, widths, today):
     import openpyxl
-    from openpyxl.styles import PatternFill, Font, Alignment
     wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "AMS rows"
+    rows_sheet(wb.active, "AMS rows", items, widths)
+    summary_sheet(wb, [("", items)])
+    clean_and_save(wb, path)
+
+
+def rows_sheet(ws, title, items, widths, groups=None):
+    """One sheet of row blocks: per patient a title line, the AMS header row, then the block. With groups
+    ([(label, items)]) each group starts with a bold label line (e.g. "Fellow: MJ")."""
+    from openpyxl.styles import PatternFill, Font, Alignment
+    ws.title = title
     fill = lambda h: PatternFill("solid", fgColor="FF" + h)
     grey, green = fill(HDR[1:].upper()), fill(GREEN[1:].upper())
     body_font, bold = Font(name="Arial", size=9), Font(name="Arial", size=9, bold=True)
     wrap = Alignment(wrap_text=True, vertical="top")
     r = 1
-    for title, sub, b in items:
-        ws.cell(r, 1, title).font = Font(name="Arial", size=11, bold=True)
-        ws.cell(r + 1, 1, sub).font = Font(name="Arial", size=9, italic=True)
-        r += 2
-        for c, h in enumerate(HEAD, 1):
-            x = ws.cell(r, c, h)
-            x.fill, x.font, x.alignment = grey, bold, wrap
-        r += 1
-        for i, row in enumerate(b.cells):
-            for c, v in enumerate(row):
-                x = ws.cell(r, c + 1, v if v != "" else None)
-                x.font, x.alignment = body_font, wrap
-                if (i, c) in b.changed:
-                    x.fill = green
-                elif b.fills[i][c]:
-                    x.fill = fill(b.fills[i][c])
+    for label, group in (groups or [(None, items)]):
+        if label:
+            ws.cell(r, 1, label).font = Font(name="Arial", size=12, bold=True)
+            r += 2
+        for title_, sub, b in group:
+            ws.cell(r, 1, title_).font = Font(name="Arial", size=11, bold=True)
+            ws.cell(r + 1, 1, sub).font = Font(name="Arial", size=9, italic=True)
+            r += 2
+            for c, h in enumerate(HEAD, 1):
+                x = ws.cell(r, c, h)
+                x.fill, x.font, x.alignment = grey, bold, wrap
             r += 1
-        r += 2
+            for i, row in enumerate(b.cells):
+                for c, v in enumerate(row):
+                    x = ws.cell(r, c + 1, v if v != "" else None)
+                    x.font, x.alignment = body_font, wrap
+                    if (i, c) in b.changed:
+                        x.fill = green
+                    elif b.fills[i][c]:
+                        x.fill = fill(b.fills[i][c])
+                r += 1
+            r += 2
     for c in range(1, COLS + 1):
         ws.column_dimensions[letters(c - 1)].width = widths.get(c) or 14
+
+
+def summary_sheet(wb, groups, notes=()):
+    """Where each block sits and what changed; with several groups, which fellow it belongs to."""
     sm = wb.create_sheet("Summary")
-    sm.append(["Patient", "Where in the AMS sheet", "Changes"])
-    for title, sub, b in items:
-        sm.append([title, sub, ", ".join(b.log) or "none"])
-    for col, w in (("A", 45), ("B", 90), ("C", 60)):
+    many = len(groups) > 1 or any(g for g, _ in groups)
+    sm.append((["Fellow"] if many else []) + ["Patient", "Where in the AMS sheet", "Changes"])
+    for label, items in groups:
+        for title, sub, b in items:
+            sm.append(([label] if many else []) + [title, sub, ", ".join(b.log) or "none"])
+    for n in notes:
+        sm.append([])
+        sm.append([n])
+    for col, w in ((("A", 14), ("B", 45), ("C", 90), ("D", 60)) if many else (("A", 45), ("B", 90), ("C", 60))):
         sm.column_dimensions[col].width = w
+
+
+def clean_and_save(wb, path):
     for _ws in wb.worksheets:  # OVERLAY_6 4b: no en/em dash leaves in the AMS rows file
         for _row in _ws.iter_rows():
             for _c in _row:
@@ -550,23 +573,8 @@ def write_xlsx(path, items, widths, today):
     wb.save(path)
 
 
-def main():
-    args = sys.argv[1:]
-    ams, st, outdir = args[0], args[1], args[2]
-    opt = dict(zip(args[3::2], args[4::2]))
-    today = datetime.date.fromisoformat(opt["--date"])
-    fellow = opt.get("--fellow", "CH")
-    state = json.load(open(st))
-    shared = "--census" in opt or "--edits" in opt
-    if shared:
-        import ams_blocks as B
-        cp_by = {c["pid"]: c for c in json.load(open(opt["--census"])).get("patients", [])} if "--census" in opt else {}
-        edits_by = B.load_edits(opt.get("--edits", ""))
-        pid_of = {id(v): k for k, v in state["patients"].items()}
-    pats = [p for p in state["patients"].values()
-            if (p.get("synth") or {}).get("_fellow") == fellow
-            and ((p.get("active") and (p.get("synth") or {}).get("_date") == today.isoformat())
-                 or (not p.get("active") and p.get("archived")))]
+def open_book(ams):
+    """The AMS workbook, its entries and its column widths (read once, shared by every fellow's blocks)."""
     wb = load(ams) if ams != "MISSING" else None
     entries = index_entries(wb) if wb else []
     widths = {}
@@ -577,6 +585,42 @@ def main():
             for c in range(1, COLS + 1):
                 d = top[0].column_dimensions.get(letters(c - 1))
                 widths[c] = min(d.width, 60) if d is not None and d.width else None
+    return wb, entries, widths
+
+
+def selected(state, today, fellow):
+    """The state patients whose blocks belong in a fellow's book: on today's list, or off it (archived)."""
+    return [p for p in state["patients"].values()
+            if (p.get("synth") or {}).get("_fellow") == fellow
+            and ((p.get("active") and (p.get("synth") or {}).get("_date") == today.isoformat())
+                 or (not p.get("active") and p.get("archived")))]
+
+
+def main():
+    args = sys.argv[1:]
+    ams, st, outdir = args[0], args[1], args[2]
+    opt = dict(zip(args[3::2], args[4::2]))
+    today = datetime.date.fromisoformat(opt["--date"])
+    fellow = opt.get("--fellow", "CH")
+    state = json.load(open(st))
+    wb, entries, widths = open_book(ams)
+    items, c = build_items(state, entries, today, fellow, opt)
+    path = os.path.join(outdir, "AMS_rows_%s.xlsx" % today.isoformat())
+    if items:
+        write_xlsx(path, items, widths, today)
+    print("AMS ROWS OK: %d patients (%d with changes in place, %d new entries, %d unchanged; %d off-list still open, %d off-list finalised and dropped, %d off-list with no block for >14d dropped)%s"
+          % (len(items), c["changed"], c["new"], c["same"], c["off"], c["fin"], c["drop"], (", file " + path) if items else ", no file (no patients)"))
+
+
+def build_items(state, entries, today, fellow, opt):
+    """[(title, sub, Block)] for one fellow's patients, and the counts. opt: --census / --edits as on the command line."""
+    shared = "--census" in opt or "--edits" in opt
+    if shared:
+        import ams_blocks as B
+        cp_by = {c["pid"]: c for c in json.load(open(opt["--census"])).get("patients", [])} if "--census" in opt else {}
+        edits_by = B.load_edits(opt.get("--edits", ""))
+        pid_of = {id(v): k for k, v in state["patients"].items()}
+    pats = selected(state, today, fellow)
     items, n_changed, n_new, n_same = [], 0, 0, 0
     n_fin, n_off, n_drop = 0, 0, 0
     for p in sorted(pats, key=lambda x: (not x.get("active"), str((x.get("synth") or {}).get("_room") or ""))):
@@ -648,11 +692,7 @@ def main():
         if off:
             title += "  |  OFF LIST since %s, AMS block not finalised" % str(p.get("archived"))[:10]
         items.append((title, sub, b))
-    path = os.path.join(outdir, "AMS_rows_%s.xlsx" % today.isoformat())
-    if items:
-        write_xlsx(path, items, widths, today)
-    print("AMS ROWS OK: %d patients (%d with changes in place, %d new entries, %d unchanged; %d off-list still open, %d off-list finalised and dropped, %d off-list with no block for >14d dropped)%s"
-          % (len(items), n_changed, n_new, n_same, n_off, n_fin, n_drop, (", file " + path) if items else ", no file (no patients)"))
+    return items, {"changed": n_changed, "new": n_new, "same": n_same, "off": n_off, "fin": n_fin, "drop": n_drop}
 
 
 if __name__ == "__main__":

@@ -40,7 +40,9 @@ pycheck as_rows_today 2026-09-06 100090 100011
 python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-06 | tee as_gate.txt
 grepcheck as_gate_ok "AS GATE OK" as_gate.txt
 python3 "$I/as_gate.py" in/as_today.json in/as_today.json 2026-09-06 > as_gate2.txt || true
-grepcheck as_gate_identical "AS GATE WAIT: today's list is identical" as_gate2.txt
+grepcheck as_gate_identical "identical to yesterday's list (noted)" as_gate2.txt
+python3 "$I/as_gate.py" in/as_today.json MISSING 2026-09-08 > as_gate3.txt || true
+grepcheck as_gate_not_today "AS GATE WAIT" as_gate3.txt
 python3 "$I/match.py" MISSING in/as_today.json in/wards.json in/ams.json out --date 06.09.2026 --roster in/roster.txt
 pycheck roster_lines
 pycheck blank_bed_keeps_roster_room
@@ -201,6 +203,24 @@ print("CHECK ams_rows_has_edits OK")
 PY
 python3 "$I/checks_R.py" ams out/AMS_rows_2026-09-07.xlsx | tee checks_ams.txt
 grepcheck ams_rows_checks_R "CHECKS R OK" checks_ams.txt
+# every resident's blocks in one book (Y2): Chris's sheet unchanged, the others grouped by fellow, both checked
+mkdir -p out_all
+python3 "$I/ams_rows_all.py" in/ams_fixture.xlsx out/state_new.json out_all --date 2026-09-07 --fellow CH --census out/census.json --edits in/edits.json | tee ams_rows_all.txt
+grepcheck ams_rows_all_ok "AMS ROWS ALL OK" ams_rows_all.txt
+python3 - out/AMS_rows_2026-09-07.xlsx out_all/AMS_rows_2026-09-07.xlsx <<'PY'
+import sys, openpyxl
+one, allb = openpyxl.load_workbook(sys.argv[1]), openpyxl.load_workbook(sys.argv[2])
+assert allb.sheetnames == ["AMS rows", "Other residents", "Summary"], allb.sheetnames
+grid = lambda ws: [[c.value for c in r] for r in ws.iter_rows()]
+assert grid(one["AMS rows"]) == grid(allb["AMS rows"]), "Chris's sheet differs from ams_rows.py"
+labels = [r[0] for r in grid(allb["Other residents"]) if isinstance(r[0], str) and r[0].startswith("Fellow: ")]
+titles = [r[0] for r in grid(allb["Other residents"]) if isinstance(r[0], str) and "|" in r[0]]
+assert labels and titles, "no other resident's blocks"
+assert not any("CH" == l.split(": ")[1] for l in labels), "Chris listed among the others"
+print("CHECK ams_rows_all_layout OK (%d groups, %d blocks)" % (len(labels), len(titles)))
+PY
+python3 "$I/ams_rows_all.py" --check out_all/AMS_rows_2026-09-07.xlsx | tee ams_rows_all_check.txt
+grepcheck ams_rows_all_check "AMS ROWS ALL OK" ams_rows_all_check.txt
 python3 "$I/export.py" . --date 2026-09-07 | tee export.txt
 grepcheck export_ok "EXPORT OK: 10 patients," export.txt
 grepcheck export_ams_link "Main sheet Sep 2026,3,4,0" "out/export/tables/patient_days 2026-09-07.csv"
