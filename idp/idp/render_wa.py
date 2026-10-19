@@ -24,6 +24,7 @@ import sys, os, re, difflib, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
 from common import WARD_ORDER, jload, jdump, iso_from_ddmm
 from validate_synth import load_synth, ABX_RE, DX_RE, PEND_RE
+import idp9  # OVERLAY_9
 
 # Vitals/imaging lines worth carrying into an ID handoff. Anything else is dropped
 # to wa_dropped.txt rather than deleted silently.
@@ -202,7 +203,7 @@ def block(c, e, today, dropped):
         m = DX_RE.match(iss["dx"])
         rx = ("; " + rx_short(iss["abx"], today)) if iss["abx"] else ""
         if m:
-            L.append("%d. %s (%s)%s. %s" % (i, m.group("dx"), m.group("date"), rx, m.group("status")))
+            L.append(("%d. %s (%s)%s. %s" % (i, m.group("dx"), m.group("date"), rx, m.group("status"))) if m.group("status").strip() != "-" else "%d. %s (%s)%s" % (i, m.group("dx"), m.group("date"), rx))  # OVERLAY_9
         else:
             L.append("%d. %s%s" % (i, iss["dx"], rx))
     if e["abx_other"]:
@@ -213,6 +214,7 @@ def block(c, e, today, dropped):
         L.append("Status: " + status_ward(c, e["vitals"][0]))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_short(p) for p in e["pendings"]))
+    L.append(idp9.plan_line(e))  # OVERLAY_9 AD3
     for d, why in (e.get("not_applied") or {}).items():
         L.append("!! ID rec not applied, %s: %s" % (d, why))
     for x in e.get("conflicts") or []:
@@ -270,7 +272,7 @@ def block_verbose(c, e, today, dropped):
 def main():
     synth_p, census_p, state_p, today, out = sys.argv[1:6]
     S = load_synth(synth_p).SYNTH
-    census = jload(census_p)
+    census = idp9.apply_id_list(jload(census_p), out, keep_offlist=True)  # OVERLAY_9 AD1
     prev = {}
     if state_p.upper() != "MISSING" and os.path.exists(state_p):
         for pid, rec in (jload(state_p).get("patients") or {}).items():
@@ -288,7 +290,7 @@ def main():
             continue
         out_lines.append("*%s*" % g)
         for c in grp:
-            e = S[c["pid"]]
+            e = idp9.pooled_entry(S[c["pid"]], prev.get(c["pid"]), today)  # OVERLAY_9 AD2
             new = block(c, e, today, dropped)
             out_lines.extend(new); out_lines.append("")
             pe = prev.get(c["pid"])
@@ -311,7 +313,7 @@ def main():
     SO = getattr(load_synth(synth_p), "SIGNED_OFF", {})
     off = census.get("cs_id_offlist", [])
     if off:
-        out_lines.append("*Off the ID list, signed off (ID consulted in handoffs, or on the AS list)*")
+        out_lines.append("*Not on the ID list (ID consulted in handoffs, or restricted abx on the AS list)*")  # OVERLAY_9
         for o in off:
             out_lines.append("%s %s: %s" % (o["room"], o["name"], SO.get(o["pid"], "")))
         out_lines.append("")

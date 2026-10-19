@@ -85,7 +85,7 @@ def synth_extras():
         lines = [a for i in S[pid]["issues"] for a in i["abx"]] + S[pid]["abx_other"]
         assert any(l.split()[0] == d for l in lines), "not_applied %s has no drug line" % d
     wa = open("out/whatsapp.txt", encoding="utf-8").read()
-    for frag in ["Micro: ", "\nIM: ", "!! Conflict: ", "!! ID rec not applied, ", "*Off the ID list"] + \
+    for frag in ["Micro: ", "\nIM: ", "!! Conflict: ", "!! ID rec not applied, ", "\nID Plan: ", "*Not on the ID list"] + \
                 ["%s %s: %s" % (o["room"], o["name"], mod.SIGNED_OFF[o["pid"]]) for o in off]:
         assert frag in wa, "whatsapp.txt lacks %r" % frag
 

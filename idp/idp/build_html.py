@@ -21,7 +21,7 @@ from common import WARD_ORDER, jload
 # Shading goes through the bgcolor attribute: Gmail strips "background:" from inline styles.
 TD = "border:1px solid #808080;padding:2px 4px;vertical-align:top;text-align:left"
 
-KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ")
+KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ", "ID Plan: ")  # OVERLAY_9
 
 
 INK, MUTED, LINE, GREY, WHITE = "#141414", "#5f5f5f", "#dcdcdc", "#f0f0f0", "#ffffff"
@@ -128,6 +128,8 @@ def build(render, date_label, groups=None, label="", offlist=True):
 def main():
     render_p, out, date_label = sys.argv[1:4]
     render = jload(render_p)
+    if render.get("group_order"):  # OVERLAY_9 AD1: ID-list groups and order
+        WARD_ORDER[:] = render["group_order"]
     html, txt, n = build(render, date_label)
     for t in (html, txt):
         assert "\u2014" not in t and "\u2013" not in t, "dash in handout"
