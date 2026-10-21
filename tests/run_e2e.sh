@@ -328,4 +328,7 @@ python3 "$I/drive_state.py" unpackchain "$D1/out/state_parts" patch rebuilt.json
 grepcheck state_chain "CHAIN OK: base 2026-09-06 + 1 patch(es) 2026-09-07 -> state dated 2026-09-07" chain.txt
 pycheck chain_equal rebuilt.json "$D2/out/state_new.json"
 
+# ---------------- Layout rules (amendment AD / overlay 9, 18-19.10.2026) ----------------
+python3 "$T/tests/test_idp9.py" "$I" "$W/idp9" || fail idp9_layout "tests/test_idp9.py failed"
+
 echo "E2E OK: $W"

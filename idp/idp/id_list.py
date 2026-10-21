@@ -8,8 +8,8 @@ with --state and --date a "(new)" mark is dropped (and the *room* stars with it)
 first seen before --date, unless the --email text marks that name (new) today."""
 import sys, re, json, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-GROUPS = ["2nd floor", "SCT", "NICU", "PICU", "3rd floor", "4th floor", "5th floor", "6th floor",
-          "7th floor", "ICU B", "ICU D", "CCU / CSU", "ER", "Room unknown"]
+GROUPS = ["ER", "2nd floor", "SCT", "NICU", "PICU", "3rd floor", "4th floor A", "4th floor D", "5th floor", "6th floor",
+          "7th floor", "ICU B", "ICU D", "CCU / CSU", "Room unknown"]  # OVERLAY_9 (Chris 19.10.2026)
 def room(line):
     return line.replace("*", " ").split()[0].upper() if line.strip() else ""
 def group(r):
@@ -24,6 +24,7 @@ def group(r):
     if m:
         n = int(m.group(1))
         name = {2: "2nd floor", 3: "3rd floor"}.get(n, "%dth floor" % n)
+        if n == 4: name = "4th floor A" if int(m.group(0)) <= 419 else "4th floor D"  # OVERLAY_9: 4A up to 419, 4D from 420
         if name in GROUPS: return name
     return "Room unknown"
 def key(r):

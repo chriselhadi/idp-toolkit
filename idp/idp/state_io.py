@@ -75,6 +75,7 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
         rec["archived"] = None; rec["archived_reason"] = ""
         keep = {k: e[k] for k in e}
         keep.update({"_room": c["room"], "_group": c["group"], "_fellow": c.get("fellow", ""), "_tags": c.get("tags", []), "_date": today})
+        import idp9; keep.update(idp9.pooled_fields(e, rec.get("synth"), today))  # OVERLAY_9 AD2
         # The ward handoff docs are cumulative: every morning they hand back the whole
         # admission narrative. Carrying my own copy of it was duplicating a source I
         # re-read anyway. log_im is dropped outright; log_id survives only as a short

@@ -16,12 +16,13 @@ STATUS = "afebrile since 04/09 | no pressors | RA"
 
 
 def entry(name, one_liner, issues=(), abx_other=(), micro=(), vitals=(STATUS,), pendings=(), updates=None,
-          log_id="", **extra):
+          log_id="", id_plan=(), **extra):
     """One SYNTH entry with the default 'new today' / 'no change' update for the day."""
     e = {"name": name, "one_liner": one_liner,
          "updates": updates or (["new to service today"] if DAY == D1 else ["no change since 06/09 handout"]),
          "issues": [{"dx": dx, "abx": list(abx)} for dx, abx in issues], "abx_other": list(abx_other),
-         "micro": list(micro), "vitals": list(vitals), "pendings": list(pendings), "log_im": "", "log_id": log_id}
+         "micro": list(micro), "vitals": list(vitals), "pendings": list(pendings), "log_im": "", "log_id": log_id,
+         "id_plan": list(id_plan)}
     e.update(extra)
     return e
 
@@ -34,6 +35,7 @@ ALPHA = entry(
     micro_recap="UCx 04/09 E. coli ESBL, S Mero",
     vitals=["Tmax 38.6 06/09 | no pressors | RA"],
     pendings=["BCx (06/09) -> Mero stop date"],
+    id_plan=["06/09: Mero to complete 7 d from first negative BCx (ID attending)"],
     im_detail=["CKD3, creatinine at baseline", "HTN controlled on home regimen"],
     conflicts=["Mero start: ward doc 03/09, AMS sheet 02/09"],
     not_applied={"Vanco": "ID asked for a single shot 03/09, a repeat order was found 05/09"},
@@ -42,7 +44,7 @@ ALPHA = entry(
 
 ENTRIES = [
     ((D1, D2), ALPHA),
-    ((D1, D2), entry("Bravo Tester Two", "55F, DM2; adm 27/08, ICU4B; IM: none active.",
+    ((D1, D2), entry("Bravo Tester Two", "55F, DM2; adm 27/08 via ER; IM: none active.",
                      issues=[("HAP (29/08) | improving | ICU plan 04/09: stop D7", ["Piptazo IV q6h 29/08-"])])),
     ((D1, D2), entry("Charlie Tester Three", "80, no ward row (roster and AS list only); adm 28/08, 4th fl; IM: none documented.",
                      issues=[("Infection undetermined (undated) | - | on Erta per AS list, no ward detail", ["Erta OD ~29/08-"])])),
@@ -51,10 +53,10 @@ ENTRIES = [
     ((D1, D2), entry("Golf Tester Seven", "40M; adm ?, 3rd fl; IM: none active.",
                      issues=[("Cellulitis L leg (01/09) | improving | on Augmentin", ["Augmentin PO BID 01/09-"])],
                      updates=None if DAY == D1 else ["07/09: back on the list, record rebuilt from the ward doc"])),
-    ((D1, D2), entry("Hotel Tester Eight", "62M, NSTEMI, CCU2; IM: cardiology primary.",
+    ((D1, D2), entry("Hotel Tester Eight", "62M, NSTEMI; IM: cardiology primary.",
                      issues=[("Line infection (05/09) | BCx sent | on Vanco per cardiology", ["Vanco IV q12h 05/09-"])],
                      pendings=["BCx (05/09) -> Vanco duration"])),
-    ((D1, D2), entry("India Tester Nine", "55F, ER, bed pending; IM: none documented.",
+    ((D1, D2), entry("India Tester Nine", "55F, bed pending; IM: none documented.",
                      issues=[("Fever undetermined (06/09) | - | no antimicrobial yet", [])])),
     ((D1, D2), entry("Mike Tester Eleven", "48M, DM2, 3rd fl; IM: DM2 on insulin.",
                      issues=[("Diabetic foot infection (02/09) | swab sent | on Clinda PO", ["Clinda PO TID 02/09-"])],

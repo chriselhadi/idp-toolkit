@@ -68,7 +68,7 @@ def validate(mod, census, today):
         w = "%s" % pid
         if not isinstance(e, dict):
             errors.append(w + ": entry not a dict"); continue
-        for k in ("name", "one_liner", "updates", "issues", "abx_other", "micro", "vitals", "pendings", "log_im", "log_id"):
+        for k in ("name", "one_liner", "updates", "issues", "abx_other", "micro", "vitals", "pendings", "log_im", "log_id", "id_plan"):  # OVERLAY_9
             if k not in e:
                 errors.append("%s: missing key %s" % (w, k))
         if errors and any(x.startswith(w + ": missing key") for x in errors):
@@ -153,6 +153,7 @@ def validate(mod, census, today):
         size = sum(len(s) for s in [ol] + e["updates"] + [i.get("dx", "") for i in e["issues"] if isinstance(i, dict)] +
                    [ab for _, ab in all_abx] + e["micro"] + e["vitals"] + e["pendings"])
         if size > 1400: warns.append("%s: rendered block about %d chars, written in prose? rewrite tighter" % (w, size))
+    import idp9; idp9.validate_extra(S, cens, today, errors, warns, windows)  # OVERLAY_9 AD3-AD5
     # 28.09.2026 extensions: conflicts, not_applied, im_detail (UC), SIGNED_OFF.
     for pid, e in S.items():
         if not isinstance(e, dict):

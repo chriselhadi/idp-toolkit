@@ -8,6 +8,7 @@ import sys, os, re, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
 from common import WARD_ORDER, jload, jdump, iso_from_ddmm, ddmm, handout_vitals
 from validate_synth import load_synth, ABX_RE, PEND_RE
+import idp9  # OVERLAY_9
 
 
 def seg_days(segs, today):
@@ -92,6 +93,7 @@ def render_patient(c, e, today, with_update):
         L.append("Imaging/key labs: " + "; ".join(rest))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_line(p, today) for p in e["pendings"]))
+    L.append(idp9.plan_line(e))  # OVERLAY_9 AD3
     for x in e.get("conflicts") or []:
         L.append("Conflict: " + x)
     return L
@@ -100,6 +102,7 @@ def render_patient(c, e, today, with_update):
 def main():
     synth, census_p, today, out = sys.argv[1:5]
     mod = load_synth(synth); census = jload(census_p); S = mod.SYNTH
+    census = idp9.apply_id_list(census, out)  # OVERLAY_9 AD1
     pats = []
     for c in census["patients"]:
         e = S[c["pid"]]
@@ -124,7 +127,7 @@ def main():
         for p in grp:
             R.extend(p["lines_recap"]); R.append("")
     recap = "\n".join(R).rstrip() + "\n"
-    jdump({"date": today, "patients": pats, "signed_off": signed_off}, os.path.join(out, "render.json"))
+    jdump({"date": today, "patients": pats, "signed_off": signed_off, "group_order": list(WARD_ORDER)}, os.path.join(out, "render.json"))  # OVERLAY_9
     open(os.path.join(out, "recap_concise.txt"), "w", encoding="utf-8").write(recap)
     sizes = [sum(len(l) for l in p["lines_docx"]) for p in pats]
     print("rendered %d patients; docx chars/patient min %d max %d; recap %d chars" % (
