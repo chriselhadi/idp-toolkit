@@ -189,6 +189,10 @@ def index_entries(wb):
             starts = [r for r in range(a + 1, b) if (rows[r - 1][C_NAME - 1].value or rows[r - 1][C_MRN - 1].value)]
             for i, s in enumerate(starts):
                 e = (starts[i + 1] - 1) if i + 1 < len(starts) else b - 1
+                # The last entry before a separator (or the sheet end) must not swallow the blank
+                # rows that follow it: trim e back to the last row carrying a value.
+                while e > s and not any(c.value not in (None, "") for c in rows[e - 1][:COLS]):
+                    e -= 1
                 out.append((ws, s, e, rows))
     return out
 
