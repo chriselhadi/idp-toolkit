@@ -186,15 +186,42 @@ def index_entries(wb):
         reds = [i + 1 for i, row in enumerate(rows) if sum(rgb(c) == "FF0000" for c in row[:14]) >= 6]
         edges = [1] + reds + [len(rows) + 1]
         for a, b in zip(edges, edges[1:]):
-            starts = [r for r in range(a + 1, b) if (rows[r - 1][C_NAME - 1].value or rows[r - 1][C_MRN - 1].value)]
+            starts = [r for r in range(a + 1, b) if (rows[r - 1][C_NAME - 1].value or rows[r - 1][C_MRN - 1].value)
+                      and not is_header_row(rows[r - 1])]
             for i, s in enumerate(starts):
-                e = (starts[i + 1] - 1) if i + 1 < len(starts) else b - 1
-                # The last entry before a separator (or the sheet end) must not swallow the blank
-                # rows that follow it: trim e back to the last row carrying a value.
-                while e > s and not any(c.value not in (None, "") for c in rows[e - 1][:COLS]):
-                    e -= 1
-                out.append((ws, s, e, rows))
+                limit = (starts[i + 1] - 1) if i + 1 < len(starts) else b - 1
+                out.append((ws, s, entry_end(rows, s, limit), rows))
     return out
+
+
+BLANK_RUN = 3  # this many fully empty rows in a row end an entry
+
+
+def is_blank_row(row):
+    return not any(c.value not in (None, "") for c in row[:COLS])
+
+
+def is_header_row(row):
+    v = str(row[C_NAME - 1].value or "").lower()
+    return "pt name" in v or "patient name" in v
+
+
+def entry_end(rows, s, limit):
+    """Last row of the entry starting at row s (1-based), at most limit: it ends before BLANK_RUN consecutive fully
+    empty rows or a repeated header row, and never ends on an empty row (26.10: an entry followed by ~780 empty rows
+    was read as rows 1378-2165)."""
+    e, run = s, 0
+    for r in range(s + 1, limit + 1):
+        row = rows[r - 1]
+        if is_blank_row(row):
+            run += 1
+            if run >= BLANK_RUN:
+                break
+            continue
+        if is_header_row(row):
+            break
+        e, run = r, 0
+    return e
 
 
 def find_entry(entries, mrn, names):

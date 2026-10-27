@@ -331,4 +331,7 @@ pycheck chain_equal rebuilt.json "$D2/out/state_new.json"
 # ---------------- Layout rules (amendment AD / overlay 9, 18-19.10.2026) ----------------
 python3 "$T/tests/test_idp9.py" "$I" "$W/idp9" || fail idp9_layout "tests/test_idp9.py failed"
 
+# ---------------- Regressions: AMS block ends, export size, word rooms on the roster, shared rooms ----------------
+python3 "$T/tests/test_fixes.py" "$I" "$W/fixes" "$D2" || fail fixes "tests/test_fixes.py failed"
+
 echo "E2E OK: $W"

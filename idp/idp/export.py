@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Daily export: the dashboard bundle the app reads, and research tables in long format.
 
-    python3 export.py <run dir> --date YYYY-MM-DD [--out out/export]
+    python3 export.py <run dir> --date YYYY-MM-DD [--out out/export] [--part-chars N] [--max-file N] [--max-total N]
 
 Reads from <run dir>/out: state_new.json, census.json, delta.json, run_status.txt, flags.txt, verification.json
 (optional), ams_check.json (optional, from ams_check.py: the link to each patient's AMS-sheet entry and the
@@ -19,7 +19,16 @@ comparison with it), cultures.json (optional). Writes to --out (default <run dir
 Upload each file as text/plain (CSV and JSON stay plain text in Drive). A file longer than --part-chars (default
 38000, under the size one upload carries byte-exact) is split: the dashboard into "IDP Dashboard <date> (part n of
 N).json", consecutive slices of the one JSON text that the reader joins in order before parsing; a table into
-"<table> <date> (part n of N).csv", each part a complete CSV with the header. Prints EXPORT OK with the file list.
+"<table> <date> (part n of N).csv", each part a complete CSV with the header. --max-file (default 20000) caps every
+file further, so each one fits a single hand-typed upload call; --part-chars 0 keeps whole files (idp_upload.py sends
+bytes, nothing is retyped).
+
+Kept small: repeated identical sub-records, the empty rows trailing an AMS block, and empty or repeated table rows are
+left out. All files together stay within --max-total characters (default 120000; 0 = no cap): over it, the oldest
+history days leave the dashboard first (updates, imaging, drug history, logs; every earlier daily file still has
+them), then long table cells are cut, then the last rows of the largest table go. Each step prints a TRIMMED line.
+Prints the file list, then "EXPORT OK: <n> patients, <k> files, <total> chars" (EXPORT FAILED, exit 1, if the
+budget cannot be met).
 """
 import argparse
 import csv
@@ -27,10 +36,11 @@ import datetime as dt
 import io
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from datamodel import patient_record  # noqa: E402
+from datamodel import parse_day, patient_record  # noqa: E402
 import ams_rows as A  # noqa: E402
 
 SCHEMA_VERSION = 1  # additive fields (ams) keep schema 1: readers ignore what they do not know
@@ -72,9 +82,58 @@ def csv_text(rows, cols):
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
     w.writeheader()
+    seen = set()
     for r in rows:
-        w.writerow({k: ("|".join(v) if isinstance(v, list) else v) for k, v in r.items()})
+        r = {k: ("|".join(v) if isinstance(v, list) else v) for k, v in r.items() if k in cols}
+        key = tuple(str(r.get(k, "")) for k in cols)
+        if key in seen or not any(r.get(k) not in (None, "") for k in cols if k not in ("date", "pid")):
+            continue  # an exact repeat, or a row with nothing but its keys
+        seen.add(key)
+        w.writerow(r)
     return buf.getvalue()
+
+
+def uniq(xs):
+    """xs without exact repeats, first occurrence kept, order kept."""
+    seen, out = set(), []
+    for x in xs:
+        k = json.dumps(x, sort_keys=True, ensure_ascii=False)
+        if k not in seen:
+            seen.add(k)
+            out.append(x)
+    return out
+
+
+def compact_patient(r):
+    """One dashboard patient without repeated identical sub-records and without the empty rows that trail an AMS
+    block (an entry read too long carried hundreds of them, 26.10). "courses" is rebuilt from the deduplicated
+    issues and abx_other, the way the app rebuilds it from the slim file."""
+    for k, v in list(r.items()):
+        if isinstance(v, list) and k not in ("courses", "issues", "abx_other"):
+            r[k] = uniq(v)
+    r["issues"] = uniq([{**it, "abx": uniq(it["abx"])} for it in r["issues"]])
+    r["abx_other"] = uniq(r["abx_other"])
+    r["courses"] = [c for it in r["issues"] for c in it["abx"]] + r["abx_other"]
+    if r.get("ams"):
+        r["ams"] = {**r["ams"], "courses": uniq(r["ams"].get("courses") or []), "cultures": uniq(r["ams"].get("cultures") or [])}
+    r["ams_block"] = trim_block(r.get("ams_block"))
+    return r
+
+
+def trim_block(b):
+    """An AMS block without its trailing fully empty rows (a to-do line still pointing at a row keeps that row)."""
+    if not b or not b.get("rows"):
+        return b
+    keep = max([t.get("row", 0) for t in b.get("todo") or []] + [0])
+    n = len(b["rows"])
+    while n > keep + 1 and not any(c != "" for c in b["rows"][n - 1]):
+        n -= 1
+    if n == len(b["rows"]):
+        return b
+    b = dict(b, rows=b["rows"][:n])
+    if "tsv" in b:
+        b["tsv"] = "\n".join(b["tsv"].split("\n")[:n])
+    return b
 
 
 def ward_rank(group):
@@ -124,7 +183,7 @@ def build(run_dir, date):
         e = ams_entries.get(pid)
         r["ams"] = ({k: e[k] for k in ("sheet", "first_row", "last_row", "finalised", "courses", "cultures")}
                     if e else None)
-        patients.append(r)
+        patients.append(compact_patient(r))
     patients.sort(key=lambda p: (ward_rank(p["group"]), p["room"] or "", p["name"]))
 
     bundle = {
@@ -149,7 +208,7 @@ def build(run_dir, date):
         "ams": {"sheets": ams.get("sheets") or [], "entries": ams.get("entries", 0), "checked": bool(ams),
                 "blocks": bool(blocks)},
         # Off the ID list in the last 14 days with their AMS entry still open: data keeps arriving until it is sealed.
-        "off_list_blocks": [{"pid": pid, "name": (recs.get(pid) or {}).get("name", ""), "block": bl}
+        "off_list_blocks": [{"pid": pid, "name": (recs.get(pid) or {}).get("name", ""), "block": trim_block(bl)}
                             for pid, bl in (blocks.get("off_list") or {}).items()],
         "cultures": {"files": [f.get("title", "") if isinstance(f, dict) else f for f in (cultures or {}).get("files") or []],
                      "off_census": (cultures or {}).get("off_census") or [],
@@ -297,10 +356,143 @@ def write_parts(folder, stem, ext, chunks):
     return paths
 
 
+# Dated history the dashboard carries day after day (each day's file is kept in Drive, so the oldest entries are also
+# in earlier files): (field, how an entry's date is read). The first thing dropped when the export is over budget.
+HISTORY = ("updates", "updates_nonid", "imaging", "abx_history")
+LOGS = ("log_id", "log_im", "carry", "since_new", "since_pending", "since_resolved")
+TEXT_CAP = 160  # a table cell trimmed to fit the budget keeps this many characters
+
+
+def entry_day(x, ref):
+    """The day a history entry belongs to (a date), or None when it carries none."""
+    if isinstance(x, dict):
+        v = x.get("last") or x.get("since") or x.get("date")
+        try:
+            return dt.date.fromisoformat(v) if v else None
+        except ValueError:
+            return None
+    m = re.match(r"^\s*(~?\d{1,2}/\d{1,2})\b", str(x))
+    return parse_day(m.group(1), ref)[0] if m else None
+
+
+def history_days(bundle, ref):
+    days = set()
+    for p in bundle["patients"]:
+        for k in HISTORY:
+            days.update(d for d in (entry_day(x, ref) for x in p.get(k) or []) if d)
+        for k in LOGS:
+            days.update(d for d in (entry_day(l, ref) for l in (p.get(k) or "").split("\n")) if d)
+    return sorted(d for d in days if d < ref)
+
+
+def drop_days_through(bundle, day, ref):
+    """Remove every history entry dated `day` or earlier; returns how many went."""
+    n = 0
+    old = lambda x: (lambda d: d is not None and d <= day)(entry_day(x, ref))
+    for p in bundle["patients"]:
+        for k in HISTORY:
+            v = p.get(k) or []
+            p[k] = [x for x in v if not old(x)]
+            n += len(v) - len(p[k])
+        for k in LOGS:
+            lines = (p.get(k) or "").split("\n")
+            keep = [l for l in lines if not old(l)]
+            if len(keep) != len(lines):
+                n += len(lines) - len(keep)
+                p[k] = "\n".join(keep)
+    return n
+
+
+def cap_cell(v, n):
+    return v if len(v) <= n else v[:max(0, n - 3)] + "..."
+
+
+def fit_rows(txt, limit):
+    """A table whose every row fits one part: a row longer than a part has its longest cells cut."""
+    if limit <= 0:
+        return txt
+    rows = list(csv.reader(io.StringIO(txt)))
+    head = len(txt.split("\n", 1)[0]) + 1
+    out, changed = [], False
+    for r in rows:
+        n = TEXT_CAP
+        while len(csv_line(r)) > limit - head and n > 8:
+            r, changed = [cap_cell(c, n) for c in r], True
+            n //= 2
+        out.append(r)
+    return "".join(csv_line(r) for r in out) if changed else txt
+
+
+def csv_line(cells):
+    buf = io.StringIO()
+    csv.writer(buf, lineterminator="\n").writerow(cells)
+    return buf.getvalue()
+
+
+def cap_table(txt, n=TEXT_CAP):
+    """The table with every cell longer than n characters cut to n."""
+    return "".join(csv_line([cap_cell(c, n) for c in r]) for r in csv.reader(io.StringIO(txt)))
+
+
+def render(bundle, tables, limit):
+    """[(folder, stem, ext, [chunks])] for the dashboard and every table, split at `limit` characters."""
+    # ASCII only: every accented letter or non-breaking space is written as \\uXXXX, so the text survives being
+    # copied into an upload (a copied non-breaking space came back as a plain space on 12.10)
+    text = json.dumps(slim(bundle), ensure_ascii=True, separators=(",", ":"))
+    out = [("", "IDP Dashboard %s" % bundle["date"], ".json", split_text(text, limit))]
+    for k, txt in tables.items():
+        out.append(("tables", "%s %s" % (k, bundle["date"]), ".csv", split_csv(fit_rows(txt, limit), limit)))
+    return out
+
+
+def total_chars(parts):
+    return sum(len(c) for _, _, _, chunks in parts for c in chunks)
+
+
+def fit_budget(bundle, tables, limit, max_total, ref):
+    """Bring the export under max_total characters: oldest history days out of the dashboard first, then the tables'
+    long cells cut, then the tables' last rows dropped (largest table first). Returns (parts, notes)."""
+    notes = []
+    parts = render(bundle, tables, limit)
+    if max_total <= 0 or total_chars(parts) <= max_total:
+        return parts, notes
+    for day in history_days(bundle, ref):
+        n = drop_days_through(bundle, day, ref)
+        parts = render(bundle, tables, limit)
+        if n:
+            notes.append("dashboard: dropped %d history entries dated %s or earlier" % (n, day.isoformat()))
+        if total_chars(parts) <= max_total:
+            return parts, notes
+    cut = {k: cap_table(v) for k, v in tables.items()}
+    changed = [k for k in tables if cut[k] != tables[k]]
+    if changed:
+        tables.update(cut)
+        notes.append("tables: cells cut to %d characters in %s" % (TEXT_CAP, ", ".join(changed)))
+        parts = render(bundle, tables, limit)
+    dropped = {}
+    while total_chars(parts) > max_total:
+        k = max(tables, key=lambda t: len(tables[t]))
+        lines = tables[k].splitlines(keepends=True)
+        if len(lines) <= 1:
+            break
+        over = total_chars(parts) - max_total
+        n = 0
+        while len(lines) > 1 and over > 0:
+            over -= len(lines.pop()); n += 1
+        tables[k] = "".join(lines)
+        dropped[k] = dropped.get(k, 0) + n
+        parts = render(bundle, tables, limit)
+    for k, n in dropped.items():
+        notes.append("tables: dropped the last %d rows of %s" % (n, k))
+    return parts, notes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("run_dir"); ap.add_argument("--date", required=True); ap.add_argument("--out", default="")
     ap.add_argument("--part-chars", type=int, default=38000)
+    ap.add_argument("--max-file", type=int, default=20000, help="no file longer than this (0: no cap)")
+    ap.add_argument("--max-total", type=int, default=120000, help="all files together at most this long (0: no cap)")
     a = ap.parse_args()
     out = a.out or os.path.join(a.run_dir, "out", "export")
     if os.path.isdir(out):
@@ -308,15 +500,21 @@ def main():
         shutil.rmtree(out)  # a re-run must not leave parts of an earlier split behind
     os.makedirs(os.path.join(out, "tables"), exist_ok=True)
     bundle, tables = build(a.run_dir, a.date)
-    # ASCII only: every accented letter or non-breaking space is written as \\uXXXX, so the text survives being
-    # copied into an upload (a copied non-breaking space came back as a plain space on 12.10)
-    text = json.dumps(slim(bundle), ensure_ascii=True, separators=(",", ":"))
-    files = write_parts(out, "IDP Dashboard %s" % a.date, ".json", split_text(text, a.part_chars))
-    for k, txt in tables.items():
-        files += write_parts(os.path.join(out, "tables"), "%s %s" % (k, a.date), ".csv", split_csv(txt, a.part_chars))
+    # --part-chars 0 keeps whole files for idp_upload.py (bytes, nothing retyped); otherwise --max-file caps each file
+    limit = 0 if a.part_chars <= 0 else min(x for x in (a.part_chars, a.max_file) if x > 0)
+    parts, notes = fit_budget(bundle, tables, limit, a.max_total, dt.date.fromisoformat(a.date))
+    files = []
+    for folder, stem, ext, chunks in parts:
+        files += write_parts(os.path.join(out, folder) if folder else out, stem, ext, chunks)
     for p in files:
         print("  %7d  %s" % (os.path.getsize(p), os.path.relpath(p, out)))
-    print("EXPORT OK: %d patients, %d files" % (bundle["counts"]["census"], len(files)))
+    for n in notes:
+        print("TRIMMED %s" % n)
+    total = total_chars(parts)
+    if a.max_total > 0 and total > a.max_total:
+        print("EXPORT FAILED: %d chars after trimming, over --max-total %d" % (total, a.max_total))
+        sys.exit(1)
+    print("EXPORT OK: %d patients, %d files, %d chars" % (bundle["counts"]["census"], len(files), total))
 
 
 if __name__ == "__main__":

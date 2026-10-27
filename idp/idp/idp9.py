@@ -73,11 +73,27 @@ def apply_id_list(census, out_dir, quiet=False, keep_offlist=False):
         return census
     rows = parse_id_list(p)
     pats = list(census["patients"])
+    # Several census patients in one room (two ICU6D lines): pair the room's lines and patients by name, best pairs
+    # first, over the whole list rather than line by line, so an early line with a vague name cannot take the
+    # patient a later line names exactly and leave that line unmatched.
+    shared = {}
+    for i, (g, room, name) in enumerate(rows):
+        cand = [c for c in pats if _room_eq(c["room"], room)]
+        if len(cand) > 1:
+            shared.setdefault(tuple(sorted(c["pid"] for c in cand)), []).append((i, name, cand))
+    paired, taken = {}, set()
+    for lines in shared.values():
+        pairs = sorted(((name_sim(name, c["name"]), -i, c["pid"]) for i, name, cand in lines for c in cand), reverse=True)
+        for _, ni, pid in pairs:
+            if -ni not in paired and pid not in taken:
+                paired[-ni] = pid; taken.add(pid)
     used, ordered, groups, report = set(), [], [], []
-    for g, room, name in rows:
+    for i, (g, room, name) in enumerate(rows):
         cand = [c for c in pats if c["pid"] not in used and _room_eq(c["room"], room)]
         best = None
-        if len(cand) == 1:
+        if i in paired and paired[i] not in used:
+            best = next(c for c in pats if c["pid"] == paired[i])
+        elif len(cand) == 1:
             best = cand[0]
         elif cand:
             best = max(cand, key=lambda c: name_sim(name, c["name"]))
