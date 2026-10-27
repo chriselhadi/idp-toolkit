@@ -83,7 +83,8 @@ sy = st["patients"][pid]["synth"]
 filler = "febrile overnight, cultures sent, plan reviewed with the team " * 20
 old = ["%02d/%02d: %s" % (d, m, filler) for m in (6, 7, 8) for d in range(1, 29)]   # 84 old days, ~1250 chars each
 sy["updates"] = old * 3 + sy["updates"] + sy["updates"]                            # every entry repeated
-sy["micro"] = sy.get("micro", []) + sy.get("micro", [])
+n_micro = len(sy.get("micro", []))
+sy["micro"] = sy.get("micro", []) + sy.get("micro", [])  # same-day sets with the same text: two results each
 json.dump(st, open(sp, "w", encoding="utf-8"))
 bp = os.path.join(run, "out", "ams_blocks.json")
 bl = json.load(open(bp, encoding="utf-8"))
@@ -117,13 +118,20 @@ dash = export.unslim(json.loads("".join(open(p, encoding="utf-8").read() for p i
 alpha = next(p for p in dash["patients"] if p["pid"] == pid)
 ok("export_newest_days_kept", alpha["updates"] and alpha["updates"][-1].startswith("07/09")
    and not any(u.startswith("01/06") for u in alpha["updates"]), repr(alpha["updates"][:2]))
-ok("export_no_repeated_entries", len(alpha["updates"]) == len(set(alpha["updates"]))
-   and len(alpha["micro"]) == len({json.dumps(x, sort_keys=True) for x in alpha["micro"]}))
+ok("export_no_repeated_entries", len(alpha["updates"]) == len(set(alpha["updates"])))
+ok("export_micro_lookalikes_kept", n_micro > 0 and len(alpha["micro"]) == 2 * n_micro, repr(alpha["micro"]))
 ok("export_ams_block_no_empty_tail", len(alpha["ams_block"]["rows"]) == nrows
    and any(c for c in alpha["ams_block"]["rows"][-1]), "%d rows, expected %d" % (len(alpha["ams_block"]["rows"]), nrows))
 micro_rows = [l for p in glob.glob(os.path.join(W, "export_capped", "tables", "micro 2026-09-07*.csv"))
               for l in open(p, encoding="utf-8").read().splitlines()[1:]]
-ok("export_table_no_repeated_rows", len(micro_rows) == len(set(micro_rows)), repr(micro_rows))
+ok("export_table_micro_lookalikes_kept", len([l for l in micro_rows if ",%s," % pid in l]) == 2 * n_micro, repr(micro_rows))
+id_rows = [l for p in glob.glob(os.path.join(W, "export_capped", "tables", "abx_courses 2026-09-07*.csv"))
+           for l in open(p, encoding="utf-8").read().splitlines()[1:]]
+ok("export_table_no_repeated_rows", len(id_rows) == len(set(id_rows)), repr(id_rows))
+cx = {"date": "2026-09-05", "family": "blood", "text": "BCx GNB", "status": "prelim", "organism": "", "ast": "", "positive": True}
+pr = {"issues": [], "abx_other": [], "micro": [], "ams": {"courses": [], "cultures": [dict(cx, row=4), dict(cx, row=5), dict(cx, row=4)]}}
+got = [c["row"] for c in export.compact_patient(pr)["ams"]["cultures"]]
+ok("export_ams_cultures_same_row_only", got == [4, 5], repr(got))
 small = ex("export_small", "--max-total", "60000", "--max-file", "5000")
 sizes = [len(open(p, encoding="utf-8").read()) for p in glob.glob(os.path.join(W, "export_small", "**", "*.*"), recursive=True)]
 ok("export_flags", small.returncode == 0 and max(sizes) <= 5000 and sum(sizes) <= 60000,

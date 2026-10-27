@@ -24,7 +24,7 @@ file further, so each one fits a single hand-typed upload call; --part-chars 0 k
 bytes, nothing is retyped).
 
 Kept small: repeated identical sub-records, the empty rows trailing an AMS block, and empty or repeated table rows are
-left out. All files together stay within --max-total characters (default 120000; 0 = no cap): over it, the oldest
+left out; micro results that only look alike (no specimen ID to tell them apart) are all kept. All files together stay within --max-total characters (default 120000; 0 = no cap): over it, the oldest
 history days leave the dashboard first (updates, imaging, drug history, logs; every earlier daily file still has
 them), then long table cells are cut, then the last rows of the largest table go. Each step prints a TRIMMED line.
 Prints the file list, then "EXPORT OK: <n> patients, <k> files, <total> chars" (EXPORT FAILED, exit 1, if the
@@ -78,7 +78,9 @@ def read_text(path):
     return open(path, encoding="utf-8").read() if os.path.exists(path) else ""
 
 
-def csv_text(rows, cols):
+def csv_text(rows, cols, dedupe=True):
+    """The table as CSV. Rows with nothing but their keys are left out; so are exact repeats unless dedupe is False
+    (the micro table: its rows carry no specimen ID, so two same-day sets with the same text are two results)."""
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=cols, extrasaction="ignore", lineterminator="\n")
     w.writeheader()
@@ -86,7 +88,7 @@ def csv_text(rows, cols):
     for r in rows:
         r = {k: ("|".join(v) if isinstance(v, list) else v) for k, v in r.items() if k in cols}
         key = tuple(str(r.get(k, "")) for k in cols)
-        if key in seen or not any(r.get(k) not in (None, "") for k in cols if k not in ("date", "pid")):
+        if (dedupe and key in seen) or not any(r.get(k) not in (None, "") for k in cols if k not in ("date", "pid")):
             continue  # an exact repeat, or a row with nothing but its keys
         seen.add(key)
         w.writerow(r)
@@ -107,9 +109,13 @@ def uniq(xs):
 def compact_patient(r):
     """One dashboard patient without repeated identical sub-records and without the empty rows that trail an AMS
     block (an entry read too long carried hundreds of them, 26.10). "courses" is rebuilt from the deduplicated
-    issues and abx_other, the way the app rebuilds it from the slim file."""
+    issues and abx_other, the way the app rebuilds it from the slim file.
+    Cultures are merged only when they are the same record: "micro" entries carry no specimen ID or source row, so
+    identical-looking ones stay (two same-day sets with the same text are two results, 1/2 vs 2/2 positive sets
+    matters); AMS-sheet cultures merge only when the sheet row and the date are the same too (uniq on the whole
+    record, row included)."""
     for k, v in list(r.items()):
-        if isinstance(v, list) and k not in ("courses", "issues", "abx_other"):
+        if isinstance(v, list) and k not in ("courses", "issues", "abx_other", "micro"):
             r[k] = uniq(v)
     r["issues"] = uniq([{**it, "abx": uniq(it["abx"])} for it in r["issues"]])
     r["abx_other"] = uniq(r["abx_other"])
@@ -262,7 +268,7 @@ def build(run_dir, date):
     for f in findings:
         T["verification"].append({"date": date, **{k: f.get(k, "") for k in ("id", "severity", "code", "pid", "key",
                                                                                "message", "acknowledged")}})
-    return bundle, {k: csv_text(v, TABLES[k]) for k, v in T.items()}
+    return bundle, {k: csv_text(v, TABLES[k], dedupe=k != "micro") for k, v in T.items()}
 
 
 def slim(bundle):
