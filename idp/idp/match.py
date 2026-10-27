@@ -29,6 +29,10 @@ def parse_roster(path):
         room_tok, rest = m.group(1), m.group(2)
         if room_tok.upper() == "ER" and re.match(r"^IN\s+", rest):  # OVERLAY_6 4j: 'ER IN <name>'
             rest = re.sub(r"^IN\s+", "", rest)
+        if room_tok.lower() == "room" and re.match(r"^unknown\b", rest, re.I):  # 'Room unknown <name>'
+            room_tok, rest = room_tok + " " + rest[:7], rest[7:].strip()
+        if line.endswith(":") or not rest.strip(" -:"):
+            continue  # a heading line, not a patient
         tags = [t.lower() for t in re.findall(r"\(([^)]+)\)", rest)]
         rest = re.sub(r"\([^)]*\)", " ", rest).strip()
         fellow = ""
@@ -37,9 +41,11 @@ def parse_roster(path):
             rest, fellow = mm.group(1).strip(), mm.group(2)
         room, grp, _ = parse_bed(room_tok)
         rest = re.sub(r"\s+\?+$", "", rest).strip()
+        r = {"room": room, "group": grp, "name": rest.strip(" -:"), "tags": tags, "fellow": fellow, "raw": line}
         if grp == "Other" and not re.search(r"\d", room_tok) and not re.match(r"^(CCU|CSU|ER|NICU|PICU|SCT)", room_tok, re.I) and room_tok != "?":  # OVERLAY_6 4s
-            continue  # a heading line, not a patient
-        out.append({"room": room, "group": grp, "name": rest.strip(" -:"), "tags": tags, "fellow": fellow, "raw": line})
+            # a word where the room goes ('OBGYN Jane Doe CH', 'Room unknown ...'): a patient whose room is not known
+            r.update(room="?", group="Other", room_hint=room_tok)
+        out.append(r)
     return out
 
 

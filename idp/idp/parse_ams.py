@@ -12,6 +12,7 @@ import sys, os, re, io, json, base64, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
 from common import parse_bed, parse_date, jdump
 
+BLANK_RUN = 3  # this many fully empty rows in a row end a block
 DATE_ANY = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?\b")
 
 
@@ -49,9 +50,17 @@ def col(hdr, *keys):
 
 def parse_sheet(ws, today):
     rows = [[cellstr(v) for v in r] for r in ws.iter_rows(values_only=True)]
-    rows = [r for r in rows if any(r)]
+    # a run of BLANK_RUN or more fully empty rows ends the block above it: keep one empty row as the marker
+    marked, run = [], 0
+    for r in rows:
+        run = run + 1 if not any(r) else 0
+        if any(r) or run == BLANK_RUN:
+            marked.append(r)
+    rows = marked
+    while rows and not any(rows[0]): rows.pop(0)
     if not rows: return [], None
-    hi = next((i for i, r in enumerate(rows[:5]) if any("pt name" in c.lower() or "patient name" in c.lower() for c in r)), None)
+    is_hdr = lambda r: any("pt name" in c.lower() or "patient name" in c.lower() for c in r)
+    hi = next((i for i, r in enumerate(rows[:5]) if is_hdr(r)), None)
     if hi is None: return [], None
     hdr = [c.lower() for c in rows[hi]]
     C = {"fellow": col(hdr, "fellow"), "plan": col(hdr, "id plan", "follow up"), "plan_date": col(hdr, "plan date", "to be seen"),
@@ -63,6 +72,10 @@ def parse_sheet(ws, today):
     g = lambda r, k: (r[C[k]] if C.get(k) is not None and C[k] < len(r) else "")
     blocks, cur = [], None
     for r in rows[hi + 1:]:
+        if not any(r) or is_hdr(r):  # a blank run or a repeated header row ends the block
+            if cur: blocks.append(cur)
+            cur = None
+            continue
         name, mrn = g(r, "name"), re.sub(r"\D", "", g(r, "mrn"))
         if name or mrn:
             if cur: blocks.append(cur)
