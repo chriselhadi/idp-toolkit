@@ -155,7 +155,8 @@ def finalize(state_p, synth_p, census_p, as_p, today, out_p):
     on_census = {c["pid"] for c in census["patients"]}
     cutoff = (dt.date.fromisoformat(today) - dt.timedelta(days=PURGE_DAYS)).isoformat()
     purged = [pid for pid, rec in state["patients"].items()
-              if pid not in on_census and (rec.get("last_seen") or "9999") < cutoff]
+              if pid not in on_census and (rec.get("last_seen") or "9999") < cutoff
+              and not (rec.get("archive_note_sent") and not rec.get("dup_of"))]  # OVERLAY_10 register first
     for pid in purged:
         print("purged %s %s (last seen %s)" % (pid, state["patients"][pid]["name"][:30],
                                                state["patients"][pid].get("last_seen")))

@@ -340,7 +340,7 @@ def main():
                     pid = reg.add(p["name"], p["mrn"], today)
                 else:
                     continue
-            elif not reg.p[pid].get("active") and roster and not newly:
+            elif not reg.p[pid].get("active") and roster and (not newly or p.get("once_only")):  # OVERLAY_10 once-only never re-enters
                 continue  # came off Chris's list today: the AS list does not put them back
             rec = touch(pid, p["name"], p["mrn"], p["room"], p["group"], "as", "", ["paeds"] if "paeds" in p.get("flags", []) else [])
             rec["as_orders"] = p["orders"]; rec["as_standing"] = p["standing_drugs"]; rec["as_once_only"] = p.get("once_only", False)

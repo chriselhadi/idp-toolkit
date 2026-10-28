@@ -169,4 +169,31 @@ for label, lines in (("vague_line_first", ["ICU6D Juliet CH", "ICU6D Juliet Exam
     ok("idlist_same_room_%s" % label, sorted(x["pid"] for x in c["patients"]) == ["Q1", "Q2", "Q3"]
        and "LEFT OUT" not in rep and "UNMATCHED" not in rep
        and got.get("ICU6D Juliet Example") == "Q2" and got.get("ICU6D Juliet") == "Q1", rep)
+# ---------------- 5. Overlay 10 in the repo: idp10, idp11, tools/wa_handout.py, tools/recap_html.py ----------------
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(I)))
+TOOLS = os.path.join(ROOT, "tools")
+for f in ("match.py", "state_io.py", "idp10.py"):
+    ok("overlay10_in_%s" % f.replace(".", "_"), "OVERLAY_10" in open(os.path.join(I, f), encoding="utf-8").read())
+r = subprocess.run([sys.executable, os.path.join(I, "idp11.py")], capture_output=True, text=True)
+ok("idp11_loads_idp10", r.returncode == 0 and "regjoin2" in r.stdout, r.stderr[-300:])
+cen = os.path.join(W, "wa_census.json")
+json.dump({"patients": [{"pid": "Q1", "room": "ICU6D", "name": "Juliet Example Haddock"},
+                        {"pid": "Q2", "room": "ICU6D", "name": "Juliet Example"},
+                        {"pid": "Q3", "room": "405", "name": "Kilo Example"}]}, open(cen, "w"))
+syn = os.path.join(W, "wa_synth.py")
+open(syn, "w").write('WA = {"Q1": ["70F, line for Q1"], "Q2": ["60M, line for Q2"], "Q3": ["50F, line for Q3"]}\n')
+for label, lines in (("vague_line_first", ["*ICU6D* Juliet CH", "ICU6D Juliet Example MJ"]),
+                     ("exact_line_first", ["ICU6D Juliet Example MJ", "*ICU6D* Juliet CH"])):
+    idl = os.path.join(W, "wa_idlist.txt")
+    open(idl, "w").write("4th floor A:\n405 Kilo Example CH\n\nICU D:\n" + "\n".join(lines) + "\n")
+    wo = os.path.join(W, "wa_out.txt")
+    r = subprocess.run([sys.executable, os.path.join(TOOLS, "wa_handout.py"), idl, cen, syn, wo, "28.10.2026"],
+                       capture_output=True, text=True)
+    txt = open(wo).read() if os.path.exists(wo) else ""
+    ok("wa_same_room_%s" % label, r.stdout.startswith("WA OK: 3 patients")
+       and "Juliet Example MJ\n60M, line for Q2" in txt and "Juliet CH\n70F, line for Q1" in txt, r.stdout + txt)
+rt = os.path.join(W, "recap.txt")
+open(rt, "w").write("ID Daily Recap\n\n*ICU D:*\nICU6D Juliet Example [MJ]\n60M, history\nUpdate (ID): afebrile\n!! Conflict: x vs y\n")
+r = subprocess.run([sys.executable, os.path.join(TOOLS, "recap_html.py"), rt, os.path.join(W, "recap.html")], capture_output=True, text=True)
+ok("recap_html_runs", r.stdout.startswith("RECAP HTML OK"), r.stdout + r.stderr[-300:])
 print("FIXES TESTS OK")
