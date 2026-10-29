@@ -137,8 +137,15 @@ sizes = [len(open(p, encoding="utf-8").read()) for p in glob.glob(os.path.join(W
 ok("export_flags", small.returncode == 0 and max(sizes) <= 5000 and sum(sizes) <= 60000,
    "max %d, total %d; %s" % (max(sizes), sum(sizes), small.stdout[-400:]))
 tiny = ex("export_tiny", "--max-total", "10000")
-ok("export_budget_unreachable_fails", tiny.returncode == 1 and "EXPORT FAILED" in tiny.stdout and "EXPORT OK" not in tiny.stdout,
-   tiny.stdout[-300:])
+tiny_tables = {os.path.basename(p): open(p, encoding="utf-8").read()
+               for p in glob.glob(os.path.join(W, "export_tiny", "tables", "*.csv"))}
+full_tables = {os.path.basename(p): open(p, encoding="utf-8").read()
+               for p in glob.glob(os.path.join(W, "export_capped", "tables", "*.csv"))}
+tsizes = [len(open(p, encoding="utf-8").read()) for p in glob.glob(os.path.join(W, "export_tiny", "**", "*.*"), recursive=True)]
+ok("export_budget_unreachable_warns", tiny.returncode == 0 and "OVER TARGET" in tiny.stdout and "SIZE dashboard" in tiny.stdout
+   and tiny.stdout.strip().splitlines()[-1].startswith("EXPORT OK") and max(tsizes) <= 20000, tiny.stdout[-400:])
+ok("export_tables_kept_when_dashboard_over", tiny_tables == full_tables and "TRIMMED tables: dropped" not in tiny.stdout,
+   tiny.stdout[-400:])
 
 # ---------------- 3. roster: a word in the room slot is a patient ----------------
 import match  # noqa: E402
