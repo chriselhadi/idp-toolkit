@@ -206,3 +206,22 @@ consolidation".
 ## Amendments O to T (07.10.2026)
 
 The run follows IDP_amendments_NO.txt in the Drive overlay folder (O second AMS workbook, P ID list first and no archive email, Q overlay 4 and membership, R overlay 5, S strict rules and checks_R.py, T overlays 6 and 7 and the helper scripts). It overrides this file where they conflict. It stays on Drive because it names patients.
+
+## Register coverage, backfill and Schema (29.10.2026, Chris)
+
+Every admission the ID service follows has a block in the IDP Discharge Register from its first day on the service.
+- `idp11.py feed` puts each pid in Feed Patients on its first morning (Status Active). New column "AMS block"
+  (sheet!first row of a hand-made AMS workbook block for the same admission) before "Updated": schema_version 2.
+  The existing read range 'Feed Patients'!A1:V5000 still covers every compared column (A..V); W is "Updated".
+- `idp11.py checkreg` also checks coverage against `reg_Index.json` next to the register file (or `--index`): every
+  Feed pid must have exactly one Index Key. Missing or duplicate ones become Verification rows ("missing block",
+  "duplicate block", Found by Claude) in vrows_ops.json, and the line "register: N admissions, M without a block"
+  goes to out/feed/coverage.txt and out/run_status.txt. Put that line in the closing note when M > 0.
+- `idp11.py backfill <state_new> <reg_Index.json> <dir of identifiers CSVs> --date D` reports the admissions with no
+  block (count and dates only). After Chris's go, the same command with `--queue` stores them in state["backfill"];
+  `feed` then adds them as "Discharged dd/mm/yy", sharing the daily cap (--backlog, 10) with the departed backlog,
+  oldest first, until `final` sees their block FINAL in Index.
+- `idp11.py schema --date D` prints the Schema tab ops for both sheets and the Meta op. Rewrite them whenever a
+  header changes, and bump SCHEMA_VERSION in idp11.py with it. Never rename a header without the bump.
+- Cells that look like numbers, dates or formulas (MRNs, dd/mm) are written with a leading apostrophe; dates in
+  Updated, Feed Changes, Verification and Meta are dd/mm/yy.
