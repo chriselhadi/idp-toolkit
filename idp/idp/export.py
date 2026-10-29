@@ -27,8 +27,9 @@ Kept small: repeated identical sub-records, the empty rows trailing an AMS block
 left out; micro results that only look alike (no specimen ID to tell them apart) are all kept. All files together stay within --max-total characters (default 120000; 0 = no cap): over it, the oldest
 history days leave the dashboard first (updates, imaging, drug history, logs; every earlier daily file still has
 them), then long table cells are cut, then the last rows of the largest table go. Each step prints a TRIMMED line.
-Prints the file list, then "EXPORT OK: <n> patients, <k> files, <total> chars" (EXPORT FAILED, exit 1, if the
-budget cannot be met).
+Prints the file list, then "EXPORT OK: <n> patients, <k> files, <total> chars". When the budget cannot be met (the
+dashboard alone is over it), the tables are left whole, OVER TARGET and a SIZE line (the dashboard's largest parts,
+by field name) come before EXPORT OK, and every file is still within --max-file.
 """
 import argparse
 import csv
@@ -457,7 +458,9 @@ def total_chars(parts):
 
 def fit_budget(bundle, tables, limit, max_total, ref):
     """Bring the export under max_total characters: oldest history days out of the dashboard first, then the tables'
-    long cells cut, then the tables' last rows dropped (largest table first). Returns (parts, notes)."""
+    long cells cut, then the tables' last rows dropped (largest table first). The tables are touched only when that
+    can bring the export under the target: when the dashboard alone is over it, they stay whole (29.10: a 229 K
+    dashboard emptied every table and the export still failed). Returns (parts, notes)."""
     notes = []
     parts = render(bundle, tables, limit)
     if max_total <= 0 or total_chars(parts) <= max_total:
@@ -469,6 +472,11 @@ def fit_budget(bundle, tables, limit, max_total, ref):
             notes.append("dashboard: dropped %d history entries dated %s or earlier" % (n, day.isoformat()))
         if total_chars(parts) <= max_total:
             return parts, notes
+    floor = sum(len(c) for f, _, _, chunks in parts if not f for c in chunks) \
+        + sum(len(t.split("\n", 1)[0]) + 1 for t in tables.values())
+    if floor > max_total:
+        notes.append("tables: left whole, the dashboard alone is %d chars, over the %d target" % (floor, max_total))
+        return parts, notes
     cut = {k: cap_table(v) for k, v in tables.items()}
     changed = [k for k in tables if cut[k] != tables[k]]
     if changed:
@@ -491,6 +499,18 @@ def fit_budget(bundle, tables, limit, max_total, ref):
     for k, n in dropped.items():
         notes.append("tables: dropped the last %d rows of %s" % (n, k))
     return parts, notes
+
+
+def size_report(bundle):
+    """Where the dashboard's characters are: its largest parts, by field name only."""
+    b = slim(bundle)
+    n = lambda v: len(json.dumps(v, ensure_ascii=True, separators=(",", ":")))
+    parts = {k: n(v) for k, v in b.items() if k != "patients"}
+    for p in b["patients"]:
+        for k, v in p.items():
+            parts["patients." + k] = parts.get("patients." + k, 0) + n(v)
+    top = sorted(parts.items(), key=lambda x: -x[1])[:8]
+    return "dashboard %d chars: " % n(b) + ", ".join("%s %d" % kv for kv in top)
 
 
 def main():
@@ -518,8 +538,10 @@ def main():
         print("TRIMMED %s" % n)
     total = total_chars(parts)
     if a.max_total > 0 and total > a.max_total:
-        print("EXPORT FAILED: %d chars after trimming, over --max-total %d" % (total, a.max_total))
-        sys.exit(1)
+        # Over the target is a warning, not a failure: every file still fits one upload (--max-file), so the run
+        # uploads them all. SIZE says which part of the dashboard is large (field names and sizes, no patient data).
+        print("OVER TARGET: %d chars, --max-total %d; every file is still within --max-file" % (total, a.max_total))
+        print("SIZE " + size_report(bundle))
     print("EXPORT OK: %d patients, %d files, %d chars" % (bundle["counts"]["census"], len(files), total))
 
 
