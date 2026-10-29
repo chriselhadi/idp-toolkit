@@ -18,6 +18,15 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
   vqueue    <verification.json> --date D     Gemini's open findings on Claude's data, and what goes to Chris
   vwrite    <verification.json> <replies.json> <outdir>    replies -> outdir/vreply_ops.json
   regjoin2  <out.json> <raw tab json>...     Register + History + Admissions -> one register.json for idp10 base/readmit
+  backfill  <state_new> <index.json> <identifiers dir> --date D [--queue]
+              admissions in the state or in the IDP_Data identifiers tables with no register block: count and date
+              range; with --queue they go into state["backfill"] and enter the feed as Discharged, at most --backlog a day
+  schema    --date D                 the Schema and Meta ops for IDP Feed and the Schema op for the register
+
+29.10.2026 (Chris): every admission must have a register block from its first day on the service. The feed gives
+Gemini each pid on its first morning (Status Active); checkreg checks coverage (every Feed pid has exactly one Index
+Key) and writes "missing block" rows to Verification; Feed Patients carries "AMS block" (sheet!first row of a hand-made
+AMS workbook block for the same admission) so Gemini reconciles rather than duplicates. Schema version 2.
 """
 import sys, os, re, json, argparse, datetime as dt, importlib.util
 
@@ -30,14 +39,17 @@ AMS33 = I.REG_HEADER[2:]
 TABS = {
     "Feed Patients": (["pid", "MRN", "Name", "Status", "Room", "Fellow", "UC", "First seen", "Last seen", "Age",
                        "Date of Admission", "CrCl", "Weight", "One-liner", "ID issues", "ID plan", "Status line", "Imaging",
-                       "Micro recap", "Pendings", "Conflicts", "Updated"], 1, "patients"),
+                       "Micro recap", "Pendings", "Conflicts", "AMS block", "Updated"], 1, "patients"),
     "Feed Antimicrobials": (["pid", "Drug", "Line", "Issue", "Start", "End", "Running", "Updated"], 2, "antimicrobials"),
     "Feed Micro": (["pid", "Collected", "Specimen", "Result", "Status", "Late", "Updated"], 3, "micro"),
 }
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-META_NOTE = ("Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
+SCHEMA_VERSION = "2"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
+             "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
+             "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
              "other AMS columns. Status: Active | Off service dd/mm/yy (gone one run) | Discharged dd/mm/yy (gone two runs: "
              "finalise the block) | Watch dd/mm/yy (block final, late cultures still arriving). Late = Y: result final "
              "after discharge. A pid whose rows are cleared has left the feed.")
@@ -61,14 +73,26 @@ def key_of(r, n):
     return tuple(x[1:] if x.startswith("'") else x for x in r[:n])
 
 
+NUMLIKE = re.compile(r"^[\s\d.,/:%+\-<>()~]*\d[\s\d.,/:%+\-<>()~]*$")
+
+
 def cell(v):
+    """Text for a sheet cell. A leading apostrophe on anything Sheets would read as a number, date or formula
+    (MRNs, dd/mm dates, values): the cell stays text exactly as written. Comparisons strip it again."""
     v = re.sub(r"\s*\n\s*", " ; ", v if isinstance(v, str) else ("" if v is None else str(v))).strip()
-    return sheet_safe(clean(v))[:4000]
+    v = sheet_safe(clean(v))[:4000]
+    if v and not v.startswith("'") and (NUMLIKE.match(v) or v[:1] == "-"):
+        v = "'" + v
+    return v
+
+
+def bare(v):
+    return v[1:] if isinstance(v, str) and v.startswith("'") else v
 
 
 def dmy(iso):
     try:
-        return dt.date.fromisoformat(iso).strftime("%d/%m/%Y")
+        return dt.date.fromisoformat(iso).strftime("%d/%m/%y")
     except Exception:
         return iso or ""
 
@@ -120,6 +144,24 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
                  key=lambda x: x[1].get("last_seen") or "")
     drop = {x[0] for x in old[backlog:]}
     pts = [x for x in pts if x[0] not in drop]
+    # backfill (29.10.2026): past admissions with no register block, queued once by `backfill --queue`; they share the
+    # daily cap with the departed backlog and stay in the feed (Discharged) until their block is FINAL in Index
+    bf = state.get("backfill") or {}
+    slots = max(0, backlog - min(len(old), backlog))
+    have = {x[0] for x in pts}
+    bf_rows = []
+    for pid, e in sorted(bf.items(), key=lambda kv: kv[1].get("last") or ""):
+        if pid in have:
+            continue
+        if pid not in infeed:
+            if slots <= 0:
+                continue
+            slots -= 1
+        rec = state.get("patients", {}).get(pid)
+        if rec is not None:
+            pts.append((pid, rec, "Discharged " + ddmm(rec.get("last_seen"))))
+        else:
+            bf_rows.append((pid, e))
     for pid, rec, status in sorted(pts):
         sy = rec.get("synth") or {}
         c = cen.get(pid, {})
@@ -128,12 +170,14 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
         a = lambda i: (r0[i] if len(r0) > i and r0[i] is not None else "")
         issues = sy.get("issues") or []
         vit = sy.get("vitals") or []
+        loc = (amsb.get(pid) or {}).get("location") or {}
+        amsloc = ("%s!%s" % (loc.get("sheet"), loc.get("first_row"))) if loc.get("sheet") and loc.get("first_row") else ""
         rows["Feed Patients"].append([pid, rec.get("mrn") or c.get("mrn") or (a(5) if str(a(5)).isdigit() else ""),
             rec.get("name") or c.get("name", ""), status, c.get("room") or sy.get("_room", ""), c.get("fellow") or sy.get("_fellow", ""),
             "Y" if "uc" in (c.get("tags") or sy.get("_tags") or []) else "", ddmm(rec.get("first_seen")), ddmm(rec.get("last_seen")),
             a(6), a(11), a(10), a(8), sy.get("one_liner", ""), " ; ".join(i.get("dx", "") for i in issues),
             " ; ".join(sy.get("id_plan") or []), vit[0] if vit else "", " ; ".join(vit[1:]), sy.get("micro_recap", ""),
-            " ; ".join(sy.get("pendings") or []), " ; ".join(sy.get("conflicts") or [])])
+            " ; ".join(sy.get("pendings") or []), " ; ".join(sy.get("conflicts") or []), amsloc])
         abx = [(i.get("dx", "").split(" | ")[0], l) for i in issues for l in i.get("abx", [])] + [("no linked issue", l) for l in sy.get("abx_other") or []]
         if not abx:
             abx = [(h.get("issue", ""), h.get("line", h.get("drug", ""))) for h in rec.get("abx_history", [])]
@@ -154,9 +198,14 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
                                        "Preliminary" if "prelim" in res.lower() else "Final", "N"])
         for p in sy.get("pendings") or []:
             rows["Feed Micro"].append([pid, "", "Pending: " + p, "", "Pending", "N"])
+    for pid, e in bf_rows:
+        rows["Feed Patients"].append([pid, e.get("mrn", ""), e.get("name", ""), "Discharged " + ddmm(e.get("last")), e.get("room", ""),
+                                      e.get("fellow", ""), "", ddmm(e.get("first")), ddmm(e.get("last"))] + [""] * 4 +
+                                     [e.get("one_liner", "")] + [""] * 7 +
+                                     [("%s!%s" % (e["ams_sheet"], e["ams_first_row"])) if e.get("ams_sheet") and e.get("ams_first_row") else ""])
     for pid, w in (state.get("watch") or {}).items():
         rows["Feed Patients"].append([pid, w.get("mrn", ""), w.get("name", ""), "Watch " + ddmm(w.get("discharged")), "", "", "",
-                                      "", ddmm(w.get("discharged"))] + [""] * 12)
+                                      "", ddmm(w.get("discharged"))] + [""] * 13)
         for s in stay_specimens(cx, w.get("mrn"), w.get("name"), w.get("aliases"), None, w.get("discharged")):
             if (s.get("collected") or "") >= (dt.date.fromisoformat(w["discharged"]) - dt.timedelta(days=30)).isoformat() \
                     and (s.get("final_date") or "9999") > (w.get("discharged") or ""):
@@ -196,7 +245,8 @@ def cmd_feed(a):
         now = raw_values(os.path.join(a.nowdir, fname + ".json"))
         body = now[1:]
         start = 2
-        if not now or now[0][:1] != [hdr[0]]:
+        migrating = bool(now) and [x.strip() for x in now[0]] != hdr[:len(now[0])]
+        if not now or migrating:
             ops.append({"range": "'%s'!A1:%s1" % (t, col(len(hdr))), "values": [hdr]})
         cur = {}
         for i, r in enumerate(body):
@@ -209,11 +259,11 @@ def cmd_feed(a):
         for k, r in want.items():
             if k in cur:
                 rown, old = cur[k]
-                if old[:len(hdr) - 1] != [x[1:] if x.startswith("'") else x for x in r]:
+                if old[:len(hdr) - 1] != [bare(x) for x in r]:
                     upd[rown] = r + [today]
                     for h, o, n in zip(hdr, old, r):
-                        if o != (n[1:] if n.startswith("'") else n):
-                            changes.append([today, r[0], t, " | ".join(k), h, o[:300], n[:300]])
+                        if o != bare(n) and not (migrating and h == "AMS block"):
+                            changes.append([today, r[0], t, " | ".join(k), h, o[:300], bare(n)[:300]])
             else:
                 upd[nxt] = r + [today]; nxt += 1
                 if r[0] in known_pids or t == "Feed Patients":
@@ -236,6 +286,7 @@ def cmd_feed(a):
         ops.append({"range": "'Feed Changes'!A1:G1", "values": [CHANGES]}); crow = 2
     else:
         crow = len(ch) + 1
+    changes = [[cell(v) for v in r] for r in changes]
     for i in range(0, len(changes), 60):
         part = changes[i:i + 60]
         ops.append({"range": "'Feed Changes'!A%d:G%d" % (crow, crow + len(part) - 1), "values": part}); crow += len(part)
@@ -265,7 +316,7 @@ def cmd_feedcheck(a):
         want = {key_of(r, nkey): r for r in desired[t]}
         for k, r in want.items():
             g = got.get(k)
-            if g is None or [x.lstrip("'") for x in r] != g:
+            if g is None or [bare(x) for x in r] != g:
                 bad.append("%s %s" % (t, " | ".join(k)))
         for k in got:
             if k not in want:
@@ -274,8 +325,7 @@ def cmd_feedcheck(a):
         print("MISMATCH " + b)
     if bad:
         print("FEED FAILED: %d row(s) differ" % len(bad)); return 1
-    meta = [["Key", "Value"], ["schema_version", "1"], ["status", "live"], ["last_run", dmy(a.date)], ["tabs", META_NOTE]]
-    print("FEED MATCH. Meta op: " + json.dumps({"range": "'Meta'!A1:B5", "values": meta}, ensure_ascii=True))
+    print("FEED MATCH. Meta op: " + json.dumps(meta_op(a.date), ensure_ascii=True))
     return 0
 
 
@@ -296,7 +346,7 @@ def index_final(index_vals):
 def cmd_final(a):
     state = jload(a.state); idx = index_final(raw_values(a.index)); entries = []
     for pid, rec in state.get("patients", {}).items():
-        if rec.get("active") or rec.get("dup_of") or not rec.get("archive_note_sent"):
+        if rec.get("active") or rec.get("dup_of") or not (rec.get("archive_note_sent") or pid in (state.get("backfill") or {})):
             continue
         if not on_service_once(rec):
             continue
@@ -307,6 +357,13 @@ def cmd_final(a):
     json.dump({"entries": entries, "values": []}, open(rr, "w"))
     ns = argparse.Namespace(state=a.state, rows=rr, cultures=a.cultures, date=a.date)
     I.cmd_strip(ns)
+    st = jload(a.state); bf = st.get("backfill") or {}
+    done = [p for p in bf if any(f for _, f in idx.get(p, []))]
+    if done:
+        for p in done:
+            bf.pop(p, None)
+        json.dump(st, open(a.state, "w", encoding="utf-8"), ensure_ascii=False)
+        print("backfill: %d admission(s) now FINAL in Index, %d still queued" % (len(done), len(bf)))
     print("FINAL OK: %d record(s) with a FINAL register block left the state" % len(entries))
     return 0
 
@@ -354,7 +411,35 @@ def next_ids(ver, prefix, date):
         yield "%s%04d" % (tag, n)
 
 
+def index_keys(index_vals):
+    """pid -> list of Index Keys naming it (a Key is 'MRN x | Pnnnn | dd/mm/yy to dd/mm/yy')."""
+    hdr = index_vals[0] if index_vals else []
+    ki = hdr.index("Keys") if "Keys" in hdr else 3
+    out = {}
+    for r in index_vals[1:]:
+        r = r + [""] * 12
+        for k in re.split(r"\n|;\s*", r[ki]):
+            m = re.search(r"\|\s*(P\d{3,5})\s*\|", k)
+            if m:
+                out.setdefault(m.group(1), []).append(k.strip())
+    return out
+
+
+def coverage(desired, index_vals):
+    if index_vals is None:
+        return None
+    ik = index_keys(index_vals)
+    bad, n = [], 0
+    for r in desired["Feed Patients"]:
+        n += 1
+        k = ik.get(r[0], [])
+        if len(k) != 1:
+            bad.append((r[0], len(k), "%s | MRN %s | %s to %s | %s" % (r[0], bare(r[1]), bare(r[7]), bare(r[8]), r[3])))
+    return {"n": n, "bad": bad, "missing": sum(1 for b in bad if b[1] == 0), "dup": sum(1 for b in bad if b[1] > 1)}
+
+
 def cmd_checkreg(a):
+    os.makedirs(a.outdir, exist_ok=True)
     reg = raw_values(a.register); desired = json.load(open(a.desired)); ver = raw_values(a.verification)
     cx = jload(a.cultures) or {"specimens": []}
     blocks, order = blocks_of(reg)
@@ -409,6 +494,27 @@ def cmd_checkreg(a):
         else:
             rows.append([next(ids), today, "Claude", "Register", key, "ALL", "MRN, every antimicrobial and start date, organisms",
                          "Claude's record and Daily Cultures", "IDP Feed, Daily Cultures", "", "", "", "", "verified"]); nver += 1
+    # coverage (29.10.2026): every pid in Feed Patients has exactly one Index Key
+    ipath = getattr(a, "index", None) or os.path.join(os.path.dirname(os.path.abspath(a.register)), "reg_Index.json")
+    cov = coverage(desired, raw_values(ipath) if os.path.exists(ipath) else None)
+    if cov is None:
+        line = "register: index not read, coverage not checked"
+    else:
+        openrows = {(r[4], r[9]) for r in ver[1:] if len(r) > 13 and r[2] == "Claude" and r[3] == "Index" and r[13] == "open"}
+        for pid, n, info in cov["bad"]:
+            sev = "missing block" if n == 0 else "duplicate block"
+            if (pid, sev) not in openrows:
+                rows.append([next(ids), today, "Claude", "Index", pid, "Keys", "%d Key(s)" % n, info, "Feed Patients",
+                             sev, "", "", "", "open"])
+        line = "register: %d admissions, %d without a block%s" % (
+            cov["n"], cov["missing"], (", %d with more than one" % cov["dup"]) if cov["dup"] else "")
+    print(line)
+    open(os.path.join(a.outdir, "coverage.txt"), "w").write(line + "\n")
+    rs = os.path.join(os.path.dirname(os.path.abspath(a.outdir)), "run_status.txt")
+    if os.path.exists(rs):
+        txt = open(rs).read()
+        txt = re.sub(r"(?m)^register: .*\n?", "", txt)
+        open(rs, "w").write(txt + ("" if txt.endswith("\n") or not txt else "\n") + line + "\n")
     start = len(ver) + 1 if ver else 2
     ops = []
     if not ver:
@@ -417,7 +523,6 @@ def cmd_checkreg(a):
     for i in range(0, len(rows), 40):
         part = rows[i:i + 40]
         ops.append({"range": "Verification!A%d:N%d" % (start + i, start + i + len(part) - 1), "values": part})
-    os.makedirs(a.outdir, exist_ok=True)
     json.dump(ops, open(os.path.join(a.outdir, "vrows_ops.json"), "w"), ensure_ascii=True)
     print("CHECKREG OK: %d block(s) verified, %d finding(s); %d update_values call(s) in vrows_ops.json" % (nver, nfind, len(ops)))
     return 0
@@ -426,7 +531,7 @@ def cmd_checkreg(a):
 # ------------------------------------------------------------------ the Verification exchange
 def days(d1, today):
     try:
-        a = dt.datetime.strptime(d1, "%d/%m/%Y").date()
+        a = dt.datetime.strptime(d1, "%d/%m/%Y" if len(d1.strip()) == 10 else "%d/%m/%y").date()
         return (dt.date.fromisoformat(today) - a).days
     except Exception:
         return 0
@@ -489,13 +594,125 @@ def cmd_regjoin2(a):
     return 0
 
 
+# ------------------------------------------------------------------ backfill (once, after Chris's go)
+def cmd_backfill(a):
+    """Admissions known to the run (state, and the IDP_Data identifiers tables) that have no register block: by pid in
+    an Index Key, or by an AMS-keyed Key with the same MRN whose dates overlap the stay (+-5 days). Consult-only and
+    AS-list-only records are not admissions of the service. Prints the count and date range only (no names)."""
+    import csv, glob, io
+    state = jload(a.state); ik = index_keys(raw_values(a.index)); km = {}
+    for r in raw_values(a.index)[1:]:
+        r = r + [""] * 12
+        for k in re.split(r"\n|;\s*", r[3]):
+            m = re.match(r"MRN\s+'?(\S+)\s*\|\s*(\S+)\s*\|\s*(\S*)\s*to\s*(\S*)", k.strip())
+            if m:
+                km.setdefault(m.group(1), []).append((pdate(m.group(3)), pdate(m.group(4))))
+    adm = {}
+    for pid, r in state.get("patients", {}).items():
+        if r.get("dup_of") or not on_service_once(r) or r.get("active"):
+            continue
+        adm[pid] = {"mrn": r.get("mrn", ""), "name": r.get("name", ""), "first": r.get("first_seen"), "last": r.get("last_seen"), "in_state": True}
+    for f in sorted(glob.glob(os.path.join(a.tables, "identifiers*"))):
+        for row in csv.DictReader(io.StringIO(open(f, encoding="utf-8").read().replace("\\_", "_"))):
+            p = row.get("pid")
+            if p and p not in state.get("patients", {}) and row.get("first_seen") and row.get("last_seen"):
+                adm[p] = {"mrn": row.get("mrn", ""), "name": row.get("name", ""), "aliases": [x for x in (row.get("aliases") or "").split("; ") if x],
+                          "first": row["first_seen"], "last": row["last_seen"], "ams_sheet": row.get("ams_sheet", ""),
+                          "ams_first_row": row.get("ams_first_row", ""), "in_state": False}
+    need = {}
+    for p, e in adm.items():
+        if ik.get(p):
+            continue
+        f, l = dt.date.fromisoformat(e["first"]), dt.date.fromisoformat(e["last"])
+        if any(x[0] and (x[1] or dt.date(2099, 1, 1)) >= f - dt.timedelta(5) and x[0] <= l + dt.timedelta(5) for x in km.get(e["mrn"], [])):
+            continue
+        need[p] = e
+    if not need:
+        print("BACKFILL: 0 admissions without a register block"); return 0
+    print("BACKFILL: %d admission(s) without a register block (of %d known); on the service %s to %s, left %s to %s; %d still in the state"
+          % (len(need), len(adm), ddmm(min(e["first"] for e in need.values())), ddmm(max(e["last"] for e in need.values())),
+             ddmm(min(e["last"] for e in need.values())), ddmm(max(e["last"] for e in need.values())), sum(e["in_state"] for e in need.values())))
+    if a.queue:
+        bf = state.setdefault("backfill", {})
+        for p, e in need.items():
+            bf.setdefault(p, dict(e, queued=a.date))
+        json.dump(state, open(a.state, "w", encoding="utf-8"), ensure_ascii=False)
+        print("BACKFILL QUEUED: %d in state[backfill]; they enter the feed at most --backlog a day, oldest first" % len(bf))
+    return 0
+
+
+def pdate(s):
+    for f in ("%d/%m/%y", "%d/%m/%Y"):
+        try:
+            return dt.datetime.strptime(s, f).date()
+        except Exception:
+            pass
+    return None
+
+
+# ------------------------------------------------------------------ Schema tabs (the app's contract)
+INDEX_HDR = ["MRN", "Name", "Other spellings", "Keys", "Last discharge", "Last organism", "Verified by Claude",
+             "Verified by Gemini", "Open findings", "FINAL"]
+KEYFIX_HDR = ["old Key", "block start row", "new Key"]
+SCHEMA_HDR = ["Tab", "Key", "Header row (in order)", "Meaning"]
+RULES = ("Dates dd/mm/yy. Anything that looks like a number, date or formula is stored as text with a leading "
+         "apostrophe. No doses. The app reads; it never writes to IDP Feed or the register.")
+
+
+def schema_rows(which):
+    j = lambda h: " | ".join(h)
+    if which == "feed":
+        fp = TABS["Feed Patients"][0]
+        return [SCHEMA_HDR,
+                ["Schema", "Tab", j(SCHEMA_HDR), "This contract. schema_version " + SCHEMA_VERSION + "; any header change bumps it. " + RULES],
+                ["Meta", "Key", "Key | Value", "schema_version, status (live), last_run (dd/mm/yy), tabs (note for Gemini)"],
+                ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission). Written by the morning run, changed rows only. AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
+                ["Feed Patients", "Status = Active", "", "On the ID list today. Gemini opens the register block on the first morning it appears."],
+                ["Feed Patients", "Status = Off service dd/mm/yy", "", "Gone from the ID list one run; dd/mm/yy = last day on the service."],
+                ["Feed Patients", "Status = Discharged dd/mm/yy", "", "Gone two runs, or a past admission fed back in by the backfill; Gemini finalises the block."],
+                ["Feed Patients", "Status = Watch dd/mm/yy", "", "Block FINAL in Index; late cultures of the stay still arriving (Feed Micro, Late = Y)."],
+                ["Feed Antimicrobials", "pid + Drug", j(TABS["Feed Antimicrobials"][0]), "One row per course; a second course of the same drug is 'Drug #2'. Start/End dd/mm, ~ approximate, ? not documented. Running Y/N."],
+                ["Feed Micro", "pid + Collected + Specimen", j(TABS["Feed Micro"][0]), "One row per specimen or pending item. Status: Final | Final dd/mm/yy | Preliminary | Pending. Late = Y: final after discharge."],
+                ["Feed Changes", "(log, append only)", j(CHANGES), "Every cell the run changed: Old and New values. (new row) and (removed) for whole rows."],
+                ["(any tab)", "a pid absent from Feed Patients", "", "The admission has left the feed: its block is FINAL and no culture is awaited."]]
+    return [SCHEMA_HDR,
+            ["Schema", "Tab", j(SCHEMA_HDR), "This contract, written by the morning run. schema_version " + SCHEMA_VERSION + "; any header change bumps it. " + RULES],
+            ["Register", "Key", j(I.REG_HEADER), "Gemini's blocks, current admissions. Key + Status, then the 33 columns of LAU_AMS_Dec_2025_2026_cleaned_in_original_format in the same order. One block = rows sharing a Key; a row with --- ends a block."],
+            ["Register", "Key format", "MRN <mrn> | <pid or AMS> | dd/mm/yy to dd/mm/yy", "pid Pnnnn for admissions the ID service followed (from IDP Feed); AMS for blocks taken from the hand-kept workbook. 'to' blank while the stay is open."],
+            ["Register", "Status = Active (updated dd/mm/yy)", "", "Admission on the ID service; block opened on its first morning in IDP Feed and updated daily."],
+            ["Register", "Status = Off service dd/mm/yy", "", "Left the ID list one run ago."],
+            ["Register", "Status = Discharged dd/mm/yy", "", "Stay ended; '(registered dd/mm/yy)' when the block was written after the discharge (backfill)."],
+            ["Admissions", "Key", j(I.REG_HEADER), "Same layout as Register."],
+            ["History", "Key", j(I.REG_HEADER), "Same layout; historical blocks from the AMS workbook (frozen .xlsx), read only."],
+            ["Index", "MRN", j(INDEX_HDR), "One row per patient: every Key of that patient in Keys (one per admission). FINAL = Y: the latest block is final; the morning run then drops the record from its state."],
+            ["Verification", "Row ID", j(VER), "Findings between Claude (C- rows) and Gemini (G- rows). Found by Claude | Gemini. Severity: missing | wrong | doubtful | missing block | duplicate block. State: open | agreed | disputed | fixed | verified."],
+            ["Late cultures", "Key + Collected + Specimen", j(I.LATE_HEADER), "Results final after the stay, appended to the admission's Key."],
+            ["Late cultures 2", "Key + Collected + Specimen", j(I.LATE_HEADER), "Same layout as Late cultures."],
+            ["Key fixes", "old Key", j(KEYFIX_HDR), "Keys renamed by Gemini, with the block's first row."]]
+
+
+def meta_op(date):
+    return {"range": "'Meta'!A1:B5", "values": [["Key", "Value"], ["schema_version", SCHEMA_VERSION], ["status", "live"],
+                                                 ["last_run", dmy(date)], ["tabs", META_NOTE]]}
+
+
+def cmd_schema(a):
+    for which, name in (("feed", "IDP Feed"), ("register", "IDP Discharge Register")):
+        rows = [[cell(v) for v in r] for r in schema_rows(which)]
+        print("%s: %s" % (name, json.dumps({"range": "'Schema'!A1:D%d" % len(rows), "values": rows}, ensure_ascii=True)))
+    print("IDP Feed Meta: " + json.dumps(meta_op(a.date), ensure_ascii=True))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd")
     p = sp.add_parser("feed"); [p.add_argument(x) for x in ("state", "census", "ams_blocks", "cultures", "nowdir", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10)
     p = sp.add_parser("op"); p.add_argument("ops"); p.add_argument("n", type=int)
     p = sp.add_parser("feedcheck"); p.add_argument("desired"); p.add_argument("nowdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("final"); p.add_argument("state"); p.add_argument("index"); p.add_argument("cultures"); p.add_argument("--date", required=True)
-    p = sp.add_parser("checkreg"); [p.add_argument(x) for x in ("register", "desired", "verification", "cultures", "outdir")]; p.add_argument("--date", required=True)
+    p = sp.add_parser("checkreg"); [p.add_argument(x) for x in ("register", "desired", "verification", "cultures", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--index")
+    p = sp.add_parser("backfill"); p.add_argument("state"); p.add_argument("index"); p.add_argument("tables"); p.add_argument("--date", required=True); p.add_argument("--queue", action="store_true")
+    p = sp.add_parser("schema"); p.add_argument("--date", required=True)
     p = sp.add_parser("vqueue"); p.add_argument("verification"); p.add_argument("--date", required=True)
     p = sp.add_parser("vwrite"); p.add_argument("verification"); p.add_argument("replies"); p.add_argument("outdir")
     p = sp.add_parser("regjoin2"); p.add_argument("out"); p.add_argument("files", nargs="+")
@@ -503,7 +720,8 @@ def main():
     if not a.cmd:
         print(__doc__); return 0
     return {"feed": cmd_feed, "op": cmd_op, "feedcheck": cmd_feedcheck, "final": cmd_final, "checkreg": cmd_checkreg,
-            "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2}[a.cmd](a)
+            "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2, "backfill": cmd_backfill,
+            "schema": cmd_schema}[a.cmd](a)
 
 
 if __name__ == "__main__":

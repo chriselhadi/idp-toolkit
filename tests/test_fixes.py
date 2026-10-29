@@ -204,3 +204,20 @@ open(rt, "w").write("ID Daily Recap\n\n*ICU D:*\nICU6D Juliet Example [MJ]\n60M,
 r = subprocess.run([sys.executable, os.path.join(TOOLS, "recap_html.py"), rt, os.path.join(W, "recap.html")], capture_output=True, text=True)
 ok("recap_html_runs", r.stdout.startswith("RECAP HTML OK"), r.stdout + r.stderr[-300:])
 print("FIXES TESTS OK")
+# ---------------- 6. Register coverage and Schema (29.10.2026): fictional pids only ----------------
+import importlib.util  # noqa: E402
+_s = importlib.util.spec_from_file_location("idp11", os.path.join(I, "idp11.py")); X = importlib.util.module_from_spec(_s); _s.loader.exec_module(X)
+ok("idp11_apostrophe", X.cell("123456") == "'123456" and X.cell("05/10") == "'05/10" and X.cell("=1+1") == "'=1+1"
+   and X.cell("Mero IV q8h") == "Mero IV q8h" and X.bare("'05/10") == "05/10")
+ok("idp11_dates_ddmmyy", X.dmy("2026-10-29") == "29/10/26")
+hdr = X.TABS["Feed Patients"][0]
+ok("idp11_feed_header_v2", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "2")
+des = {"Feed Patients": [["Q9001", "'900001", "Alpha Example", "Active"] + [""] * 18,
+                         ["Q9002", "'900002", "Beta Example", "Discharged 20/10/26"] + [""] * 18]}
+cv = X.coverage({"Feed Patients": [[r[0].replace("Q", "P")] + r[1:] for r in des["Feed Patients"]]},
+                [X.INDEX_HDR, ["900001", "Alpha Example", "", "MRN 900001 | P9001 | 28/10/26 to", "", "", "", "", "", "N"]])
+ok("idp11_coverage", cv["n"] == 2 and cv["missing"] == 1 and cv["bad"][0][0] == "P9002", str(cv))
+sr = X.schema_rows("feed") + X.schema_rows("register")
+ok("idp11_schema_rows", all(len(r) == 4 for r in sr) and not any(re.search("[\u2013\u2014]", " ".join(r)) for r in sr)
+   and any(r[0] == "Feed Patients" and "AMS block" in r[2] for r in sr))
+print("REGISTER TESTS OK")
