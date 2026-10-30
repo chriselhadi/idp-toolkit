@@ -1,7 +1,8 @@
-// Read-only Google Drive access with a service account. The account's key is in the deployment's environment:
-//   GOOGLE_SERVICE_ACCOUNT_EMAIL        the account's email
-//   GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY  its private key (PEM; "\n" escapes are accepted)
-// The only scope requested is drive.readonly, so nothing here can write, whatever a bug might ask for.
+// Read-only Google Drive access. Two ways in, from the deployment's environment:
+//   1. The AMS Register app's access (preferred when set): the same OAuth client and refresh token,
+//      GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN. That token also carries other scopes;
+//      this app only ever sends GET requests to Drive, so it reads and never writes.
+//   2. A service account limited to drive.readonly: GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY.
 import { createSign } from "node:crypto";
 import "server-only";
 
@@ -13,33 +14,39 @@ let token: { value: string; expires: number } | null = null;
 
 const b64url = (s: string | Buffer) => Buffer.from(s).toString("base64url");
 
+async function exchange(body: URLSearchParams, who: string): Promise<string> {
+  const res = await fetch(TOKEN_URL, {
+    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body, cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Google refused ${who} (${res.status}).`);
+  const j = (await res.json()) as { access_token: string; expires_in: number };
+  token = { value: j.access_token, expires: Date.now() + j.expires_in * 1000 };
+  return token.value;
+}
+
 async function accessToken(): Promise<string> {
   if (token && token.expires > Date.now() + 60_000) return token.value;
+  const { GOOGLE_CLIENT_ID: id, GOOGLE_CLIENT_SECRET: secret, GOOGLE_REFRESH_TOKEN: refresh } = process.env;
+  if (id && secret && refresh) {
+    return exchange(new URLSearchParams({ client_id: id, client_secret: secret, refresh_token: refresh, grant_type: "refresh_token" }),
+      "the app's Drive access key (GOOGLE_REFRESH_TOKEN)");
+  }
   const email = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const key = process.env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n");
-  if (!email || !key) throw new Error("The Google service account is not configured (GOOGLE_SERVICE_ACCOUNT_EMAIL, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY).");
+  if (!email || !key) throw new Error("Drive access is not configured: set GOOGLE_REFRESH_TOKEN (with GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET), or a service account.");
   const now = Math.floor(Date.now() / 1000);
   const head = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
   const claims = b64url(JSON.stringify({ iss: email, scope: SCOPE, aud: TOKEN_URL, iat: now, exp: now + 3600 }));
   const signer = createSign("RSA-SHA256");
   signer.update(`${head}.${claims}`);
   const assertion = `${head}.${claims}.${b64url(signer.sign(key))}`;
-  const res = await fetch(TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Google refused the service account (${res.status}).`);
-  const j = (await res.json()) as { access_token: string; expires_in: number };
-  token = { value: j.access_token, expires: Date.now() + j.expires_in * 1000 };
-  return token.value;
+  return exchange(new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }), "the service account");
 }
 
 async function drive(path: string): Promise<Response> {
   const res = await fetch(`${DRIVE}${path}`, { headers: { Authorization: `Bearer ${await accessToken()}` }, cache: "no-store" });
   if (!res.ok) {
-    const why = res.status === 404 ? "not found, or not shared with the service account" : `Drive error ${res.status}`;
+    const why = res.status === 404 ? "not found, or not visible to the app's Google account" : `Drive error ${res.status}`;
     throw new Error(why);
   }
   return res;

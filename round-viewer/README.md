@@ -1,8 +1,8 @@
 # ID round viewer
 
 A read-only web app for the ID stewardship team at LAU Medical Center: today's ward round and each patient's full
-history, on a phone. It never writes anything. It reads Google Drive with a service account that only has the
-`drive.readonly` scope, and every page sits behind Google sign-in limited to the team.
+history, on a phone. It never writes anything: it only sends read (GET) requests to Google Drive, and every page sits
+behind Google sign-in limited to the team.
 
 ## Screens
 
@@ -35,15 +35,13 @@ a banner and the rest of the page still renders.
 
 ## Setup
 
-1. **Service account (Drive access).** Google Cloud Console → IAM → Service accounts → create one, then Keys → Add key →
-   JSON. Enable the Google Drive API in the same project. Share each source above, as **Viewer**, with the service
-   account's email (sharing the two folders covers the files inside them).
-2. **Sign-in client.** Google Auth Platform → Clients → create a "Web application" client. Authorized redirect URI:
-   `https://<the app's domain>/api/auth/callback/google`.
-3. **Vercel environment variables** (see `.env.example`): `GOOGLE_SERVICE_ACCOUNT_EMAIL`,
-   `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` (the `private_key` from the JSON, `\n` escapes are fine), `GOOGLE_CLIENT_ID`,
-   `GOOGLE_CLIENT_SECRET`, `NEXTAUTH_SECRET` (`openssl rand -base64 32`), and `ALLOWED_EMAILS` and/or
-   `ALLOWED_DOMAINS`. Nobody can sign in until one of the last two is set.
+1. **Drive access.** Either reuse the AMS Register app's Google access: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+   and `GOOGLE_REFRESH_TOKEN`, the same values (that account can already see the files); or a service account with
+   `drive.readonly` (`GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY`) shared as Viewer on each source.
+   The app sends only GET requests to Drive either way.
+2. **Sign-in.** The same OAuth client: add the redirect URI `https://<the app's domain>/api/auth/callback/google`.
+3. **Vercel environment variables** (see `.env.example`), plus `NEXTAUTH_SECRET` (`openssl rand -base64 32`) and
+   `ALLOWED_EMAILS` and/or `ALLOWED_DOMAINS`. Nobody can sign in until one of the last two is set.
 4. Vercel project root directory: `round-viewer`.
 
 ## Development
