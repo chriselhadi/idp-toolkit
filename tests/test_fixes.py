@@ -220,4 +220,8 @@ ok("idp11_coverage", cv["n"] == 2 and cv["missing"] == 1 and cv["bad"][0][0] == 
 sr = X.schema_rows("feed") + X.schema_rows("register")
 ok("idp11_schema_rows", all(len(r) == 4 for r in sr) and not any(re.search("[\u2013\u2014]", " ".join(r)) for r in sr)
    and any(r[0] == "Feed Patients" and "AMS block" in r[2] for r in sr))
+# a feed read back with the apostrophes kept as text must still match what was written
+fp = os.path.join(W, "feed_rb.json")
+json.dump({"values": [["pid", "MRN"], ["P9001", "'900001"], ["P9002", "900002"]]}, open(fp, "w"))
+ok("idp11_readback_apostrophe", X.raw_values(fp)[1:] == [["P9001", "900001"], ["P9002", "900002"]], str(X.raw_values(fp)))
 print("REGISTER TESTS OK")

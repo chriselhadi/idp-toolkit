@@ -66,7 +66,9 @@ def raw_values(p):
         return []
     if isinstance(o, dict):
         o = o.get("values", [])
-    return [[("" if c is None else str(c)) for c in r] for r in o]
+    # A cell written with a leading apostrophe (cell(): MRNs, dd/mm) may read back with it or without it, depending on
+    # how the write was taken; strip it on every read so the comparisons and feedcheck see the same text either way.
+    return [[bare("" if c is None else str(c)) for c in r] for r in o]
 
 
 def key_of(r, n):
