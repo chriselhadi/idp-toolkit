@@ -177,7 +177,7 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
         rows["Feed Patients"].append([pid, rec.get("mrn") or c.get("mrn") or (a(5) if str(a(5)).isdigit() else ""),
             rec.get("name") or c.get("name", ""), status, c.get("room") or sy.get("_room", ""), c.get("fellow") or sy.get("_fellow", ""),
             "Y" if "uc" in (c.get("tags") or sy.get("_tags") or []) else "", ddmm(rec.get("first_seen")), ddmm(rec.get("last_seen")),
-            a(6), a(11), a(10), a(8), sy.get("one_liner", ""), " ; ".join(i.get("dx", "") for i in issues),
+            a(6), (ddmm(c["as_admission"]) if c.get("as_admission") else a(11)), a(10), a(8), sy.get("one_liner", ""), " ; ".join(i.get("dx", "") for i in issues),
             " ; ".join(sy.get("id_plan") or []), vit[0] if vit else "", " ; ".join(vit[1:]), sy.get("micro_recap", ""),
             " ; ".join(sy.get("pendings") or []), " ; ".join(sy.get("conflicts") or []), amsloc])
         abx = [(i.get("dx", "").split(" | ")[0], l) for i in issues for l in i.get("abx", [])] + [("no linked issue", l) for l in sy.get("abx_other") or []]
