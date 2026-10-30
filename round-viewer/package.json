@@ -1,0 +1,28 @@
+{
+  "name": "idp-round-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only view of the ID service's daily round and each patient's history, from Google Drive.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "15.5.28",
+    "next-auth": "4.24.15",
+    "react": "19.1.10",
+    "react-dom": "19.1.10",
+    "server-only": "0.0.1",
+    "xlsx": "0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}

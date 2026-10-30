@@ -7,3 +7,8 @@ out/
 *.tsbuildinfo
 next-env.d.ts
 .vercel
+
+# The repository ignores *.json (no patient data in git); these three are code, not data.
+!package.json
+!package-lock.json
+!tsconfig.json
