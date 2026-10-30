@@ -425,17 +425,24 @@ def index_keys(index_vals):
     return out
 
 
-def coverage(desired, index_vals):
+def coverage(desired, index_vals, date=None):
+    # a pid first seen today has not had Gemini's 09:30 morning yet: pending, not missing
     if index_vals is None:
         return None
     ik = index_keys(index_vals)
-    bad, n = [], 0
+    today = dt.date.fromisoformat(date) if date else None
+    bad, n, pending = [], 0, 0
     for r in desired["Feed Patients"]:
         n += 1
         k = ik.get(r[0], [])
+        if not k and today:
+            fs = pdate(bare(r[7]))
+            if fs and fs >= today:
+                pending += 1; continue
         if len(k) != 1:
             bad.append((r[0], len(k), "%s | MRN %s | %s to %s | %s" % (r[0], bare(r[1]), bare(r[7]), bare(r[8]), r[3])))
-    return {"n": n, "bad": bad, "missing": sum(1 for b in bad if b[1] == 0), "dup": sum(1 for b in bad if b[1] > 1)}
+    return {"n": n, "bad": bad, "missing": sum(1 for b in bad if b[1] == 0), "dup": sum(1 for b in bad if b[1] > 1),
+            "pending": pending}
 
 
 def cmd_checkreg(a):
@@ -496,7 +503,7 @@ def cmd_checkreg(a):
                          "Claude's record and Daily Cultures", "IDP Feed, Daily Cultures", "", "", "", "", "verified"]); nver += 1
     # coverage (29.10.2026): every pid in Feed Patients has exactly one Index Key
     ipath = getattr(a, "index", None) or os.path.join(os.path.dirname(os.path.abspath(a.register)), "reg_Index.json")
-    cov = coverage(desired, raw_values(ipath) if os.path.exists(ipath) else None)
+    cov = coverage(desired, raw_values(ipath) if os.path.exists(ipath) else None, a.date)
     if cov is None:
         line = "register: index not read, coverage not checked"
     else:
@@ -506,8 +513,9 @@ def cmd_checkreg(a):
             if (pid, sev) not in openrows:
                 rows.append([next(ids), today, "Claude", "Index", pid, "Keys", "%d Key(s)" % n, info, "Feed Patients",
                              sev, "", "", "", "open"])
-        line = "register: %d admissions, %d without a block%s" % (
-            cov["n"], cov["missing"], (", %d with more than one" % cov["dup"]) if cov["dup"] else "")
+        line = "register: %d admissions, %d without a block%s%s" % (
+            cov["n"], cov["missing"], (", %d with more than one" % cov["dup"]) if cov["dup"] else "",
+            (", %d new today (block due at Gemini's 09:30)" % cov["pending"]) if cov["pending"] else "")
     print(line)
     open(os.path.join(a.outdir, "coverage.txt"), "w").write(line + "\n")
     rs = os.path.join(os.path.dirname(os.path.abspath(a.outdir)), "run_status.txt")

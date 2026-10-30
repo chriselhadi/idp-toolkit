@@ -217,6 +217,10 @@ des = {"Feed Patients": [["Q9001", "'900001", "Alpha Example", "Active"] + [""] 
 cv = X.coverage({"Feed Patients": [[r[0].replace("Q", "P")] + r[1:] for r in des["Feed Patients"]]},
                 [X.INDEX_HDR, ["900001", "Alpha Example", "", "MRN 900001 | P9001 | 28/10/26 to", "", "", "", "", "", "N"]])
 ok("idp11_coverage", cv["n"] == 2 and cv["missing"] == 1 and cv["bad"][0][0] == "P9002", str(cv))
+nd = {"Feed Patients": [["P9003", "'900003", "Gamma Example", "Active", "", "", "", "'30/10/26"] + [""] * 14,
+                        ["P9004", "'900004", "Delta Example", "Active", "", "", "", "'29/10/26"] + [""] * 14]}
+cv2 = X.coverage(nd, [X.INDEX_HDR], "2026-10-30")
+ok("idp11_coverage_new_today", cv2["pending"] == 1 and cv2["missing"] == 1 and cv2["bad"][0][0] == "P9004", str(cv2))
 sr = X.schema_rows("feed") + X.schema_rows("register")
 ok("idp11_schema_rows", all(len(r) == 4 for r in sr) and not any(re.search("[\u2013\u2014]", " ".join(r)) for r in sr)
    and any(r[0] == "Feed Patients" and "AMS block" in r[2] for r in sr))
