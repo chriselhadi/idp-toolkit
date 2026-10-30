@@ -14,7 +14,7 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
   final     <state_new> <index.json> <cultures|MISSING> --date D
               a departed record whose admission Key is FINAL = Y in Index leaves the state (culture watch starts)
   checkreg  <register_tab.json> <outdir>/feed_desired.json <verification.json> <cultures|MISSING> <outdir> --date D
-              Claude's check of Gemini's Discharged blocks: C- rows (findings, or one "verified" row) -> outdir/vrows_ops.json (appended)
+              Claude's check of Gemini's Discharged blocks: C- rows (findings, or one "verified" row) -> outdir/vrows_ops.json
   vqueue    <verification.json> --date D     Gemini's open findings on Claude's data, and what goes to Chris
   vwrite    <verification.json> <replies.json> <outdir>    replies -> outdir/vreply_ops.json
   regjoin2  <out.json> <raw tab json>...     Register + History + Admissions -> one register.json for idp10 base/readmit
@@ -531,15 +531,18 @@ def cmd_checkreg(a):
         txt = open(rs).read()
         txt = re.sub(r"(?m)^register: .*\n?", "", txt)
         open(rs, "w").write(txt + ("" if txt.endswith("\n") or not txt else "\n") + line + "\n")
-    # 30.10.2026: rows are appended (append_values grows the tab; fixed row numbers ran past its end).
+    start = len(ver) + 1 if ver else 2
     ops = []
     if not ver:
         ops.append({"range": "Verification!A1:N1", "values": [VER]})
     rows = [[cell(v) for v in r] for r in rows]
     for i in range(0, len(rows), 40):
-        ops.append({"range": "Verification!A:N", "append": True, "values": rows[i:i + 40]})
+        part = rows[i:i + 40]
+        ops.append({"range": "Verification!A%d:N%d" % (start + i, start + i + len(part) - 1), "values": part})
     json.dump(ops, open(os.path.join(a.outdir, "vrows_ops.json"), "w"), ensure_ascii=True)
-    print("CHECKREG OK: %d block(s) verified, %d finding(s); %d call(s) in vrows_ops.json (append_values for ops marked append)" % (nver, nfind, len(ops)))
+    last = start + len(rows) - 1
+    print("CHECKREG OK: %d block(s) verified, %d finding(s); %d update_values call(s) in vrows_ops.json%s" % (
+        nver, nfind, len(ops), (" (last row %d)" % last) if rows else ""))
     return 0
 
 
