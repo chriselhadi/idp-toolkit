@@ -14,7 +14,7 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
   final     <state_new> <index.json> <cultures|MISSING> --date D
               a departed record whose admission Key is FINAL = Y in Index leaves the state (culture watch starts)
   checkreg  <register_tab.json> <outdir>/feed_desired.json <verification.json> <cultures|MISSING> <outdir> --date D
-              Claude's check of Gemini's Discharged blocks: C- rows (findings, or one "verified" row) -> outdir/vrows_ops.json
+              Claude's check of Gemini's Discharged blocks: C- rows (findings, or one "verified" row) -> outdir/vrows_ops.json (appended)
   vqueue    <verification.json> --date D     Gemini's open findings on Claude's data, and what goes to Chris
   vwrite    <verification.json> <replies.json> <outdir>    replies -> outdir/vreply_ops.json
   regjoin2  <out.json> <raw tab json>...     Register + History + Admissions -> one register.json for idp10 base/readmit
@@ -447,6 +447,12 @@ def coverage(desired, index_vals, date=None):
             "pending": pending}
 
 
+def dm(v):
+    """First dd/mm in a cell, zero-padded ('06/10/26, ~6/10, 06/10-09/10 -> 06/10); '' if none."""
+    m = re.search(r"(\d{1,2})/(\d{1,2})", str(v or ""))
+    return "%02d/%02d" % (int(m.group(1)), int(m.group(2))) if m else ""
+
+
 def cmd_checkreg(a):
     os.makedirs(a.outdir, exist_ok=True)
     reg = raw_values(a.register); desired = json.load(open(a.desired)); ver = raw_values(a.verification)
@@ -484,8 +490,8 @@ def cmd_checkreg(a):
             if terms and not hit:
                 found.append(("Actual antibiotics", "", r[2], "Feed Antimicrobials " + pid, "missing"))
             elif hit and r[4] and r[4] not in ("?",):
-                d = r[4].lstrip("~")[:5]
-                if not any(x[23].lstrip("~")[:5] == d for x in hit):
+                d = dm(r[4])                              # 30.10.2026: compare dd/mm only; cells carry ' and ~
+                if d and not any(dm(x[23]) == d for x in hit):
                     found.append(("Date started", "; ".join(x[23] for x in hit), r[2], "Feed Antimicrobials " + pid, "doubtful"))
         orgtext = text(32) + " " + text(30) + " " + text(33) + " " + text(34)
         if cx and p[1]:
@@ -525,16 +531,15 @@ def cmd_checkreg(a):
         txt = open(rs).read()
         txt = re.sub(r"(?m)^register: .*\n?", "", txt)
         open(rs, "w").write(txt + ("" if txt.endswith("\n") or not txt else "\n") + line + "\n")
-    start = len(ver) + 1 if ver else 2
+    # 30.10.2026: rows are appended (append_values grows the tab; fixed row numbers ran past its end).
     ops = []
     if not ver:
         ops.append({"range": "Verification!A1:N1", "values": [VER]})
     rows = [[cell(v) for v in r] for r in rows]
     for i in range(0, len(rows), 40):
-        part = rows[i:i + 40]
-        ops.append({"range": "Verification!A%d:N%d" % (start + i, start + i + len(part) - 1), "values": part})
+        ops.append({"range": "Verification!A:N", "append": True, "values": rows[i:i + 40]})
     json.dump(ops, open(os.path.join(a.outdir, "vrows_ops.json"), "w"), ensure_ascii=True)
-    print("CHECKREG OK: %d block(s) verified, %d finding(s); %d update_values call(s) in vrows_ops.json" % (nver, nfind, len(ops)))
+    print("CHECKREG OK: %d block(s) verified, %d finding(s); %d call(s) in vrows_ops.json (append_values for ops marked append)" % (nver, nfind, len(ops)))
     return 0
 
 
