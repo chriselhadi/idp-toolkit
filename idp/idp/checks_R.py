@@ -20,7 +20,7 @@ def text(paths):
             fails.append("%s: possible dose '%s' in ...%s..." % (p, m.group(0), ctx))
         for m in DASH.finditer(t):
             fails.append("%s: em/en dash at %d" % (p, m.start()))
-LINE = re.compile(r"^(\*[A-Z0-9]+\* [A-Z][a-z'\-]+(?: [A-Z][A-Za-z'\-]+)+ \(new\)|\*[A-Z0-9]+ .+ \(UC\)\*|[A-Z0-9]+ [A-Z][A-Za-z0-9'\-]+(?: [A-Z][A-Za-z'\-()]+)+(?: \(new\))?) (?:[A-Z]{2}|\?)$")
+LINE = re.compile(r"^(\*[A-Z0-9]+\* [A-Z][a-z'\-]+(?: [A-Z][A-Za-z'\-]+)+ \(new\)|\*[A-Z0-9]+ .+ \(UC\)\*|[A-Z0-9]+ [A-Z][A-Za-z0-9'\-]+(?: [A-Z][A-Za-z'\-()]+)+(?: \(new\))?) (?:[A-Z]{2,3}|\?)$")
 def idlist(p):
     for ln in open(p, encoding="utf-8").read().splitlines():
         if not ln.strip() or ln.endswith(":"):
