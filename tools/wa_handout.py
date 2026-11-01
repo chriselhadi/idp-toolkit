@@ -8,7 +8,9 @@ for p in P:
     byroom.setdefault(p["room"].upper(), []).append(p)
 out, err, seen = ["ID Handout " + d, ""], [], set()
 BAD = [(r"[–—]", "dash"), (r"\d+(\.\d+)?\s*(mg|mcg|g|units?|iu)\b", "dose"), (r"[_~`]", "WhatsApp markup"),
-       (r"\*", "asterisk"), (r"\((ID email|Floors doc|ICU doc|GS doc|AS list|app edit|updates email|handoff)[^)]*\)", "source tag")]
+       (r"\*", "asterisk"), (r"\((ID email|Floors doc|ICU doc|GS doc|AS list|app edit|updates email|handoff)[^)]*\)", "source tag"),
+       (r"\bper ID\b", "'per ID' (Chris is the ID fellow: write the plan as ours)"),
+       (r"\d{1,2}/\d{1,2}\s+to\s+\d{1,2}/\d{1,2}", "' to ' between dates (use a hyphen: 14/10-19/10)")]
 
 
 def toks(s):
