@@ -201,6 +201,9 @@ def delta_baseline(state, last_delta_sent):
 def compute_delta(as_today, as_yday):
     if not as_today or not as_yday:
         return {"computed": False, "reason": "missing today" if not as_today else "no earlier AS list in state"}
+    td, yd = as_today.get("list_date"), as_yday.get("list_date")
+    if td and yd and td <= yd:  # Chris 01.11.2026: always today's list vs an earlier day's, never the same day
+        return {"computed": False, "reason": "same-day comparison refused: list %s vs baseline %s (today's AS list not in yet?)" % (td, yd)}
     Y = {p["mrn"]: p for p in as_yday["patients"]}
     T = {p["mrn"]: p for p in as_today["patients"]}
     new = [T[m] for m in T if m not in Y and not T[m].get("once_only")]
