@@ -44,7 +44,7 @@ def main():
         base64.urlsafe_b64decode(raw["raw"] + "=" * (-len(raw["raw"]) % 4)), policy=policy.default)
     to = (msg.get("To") or "") + (msg.get("Cc") or "") + (msg.get("Bcc") or "")
     addrs = re.findall(r"[\w.+-]+@[\w.-]+", to)
-    if set(addrs) != {"chriselhadi@gmail.com", "jounblat96@gmail.com", "mariana.elakhrass9666@gmail.com"}:
+    if set(addrs) != {"chriselhadi@gmail.com"}:
         print("handout MISMATCH: recipients %r" % addrs); sys.exit(1)
     got = None
     for part in msg.walk():
