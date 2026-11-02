@@ -185,6 +185,52 @@ def name_sim(a, b):
     return hits / (len(A) + len(B) - hits)
 
 
+# Three-way date separation (Gemini/Chris 02.11.2026): today, this admission's DOA, and earlier stays (< DOA).
+_ADM_RE = re.compile(r"\badm(?:itted)?(?:\s+here)?\s+(\d{1,2})/(\d{1,2})(?![/\d])(?!\s*-\s*\d)", re.I)
+_PAST_ADM = re.compile(r"(prior|previous|last|earlier|old)\b[\w\s]{0,12}$", re.I)
+_ELSEWHERE = re.compile(r"^\s*(?:-\S*)?\s*(?:at|in)\s+(?:another|an?\s+outside|outside|other)\b", re.I)
+
+
+def current_doa(one_liner, ref_iso=None):
+    """This admission's date (dd/mm) from a one-liner '<PMH> ; adm DD/MM w/ ... ; IM: ...'. Ignores the PMH
+    clause, prior stays ('prior ID adm 01/01-05/01', 'adm 05/2025'), date ranges (a stay that ended) and stays at
+    another hospital ('adm 10/01-12/01 at another hospital'); when several remain the last one wins ('adm here 14/01').
+    A date after ref_iso (first seen, or today) is not a DOA. None when nothing qualifies."""
+    s = one_liner or ""
+    parts = s.split(" ; ")
+    body = " ; ".join(parts[1:]) if len(parts) > 1 else s
+    best = None
+    for m in _ADM_RE.finditer(body):
+        if _PAST_ADM.search(body[max(0, m.start() - 20):m.start()]) or _ELSEWHERE.match(body[m.end():m.end() + 30]):
+            continue
+        d, mo = int(m.group(1)), int(m.group(2))
+        if not (1 <= d <= 31 and 1 <= mo <= 12):
+            continue
+        if ref_iso:
+            r = dt.date.fromisoformat(ref_iso[:10])
+            y = r.year if (mo, d) <= (r.month, r.day) else r.year - 1
+            if (r - dt.date(y, mo, d)).days > 330:
+                continue
+        best = "%02d/%02d" % (d, mo)
+    return best
+
+
+def before_doa(ddmm_s, doa_ddmm, ref_iso):
+    """True when a dd/mm date falls before this admission's DOA (both read relative to ref_iso)."""
+    def full(x):
+        m = re.match(r"^~?(\d{1,2})/(\d{1,2})", (x or "").strip())
+        if not m:
+            return None
+        r = dt.date.fromisoformat(ref_iso[:10]); d, mo = int(m.group(1)), int(m.group(2))
+        try:
+            y = r.year if (mo, d) <= (r.month, r.day) else r.year - 1
+            return dt.date(y, mo, d)
+        except ValueError:
+            return None
+    a, b = full(ddmm_s), full(doa_ddmm)
+    return bool(a and b and a < b)
+
+
 def parse_date(s):
     """dd/mm/yyyy, dd.mm.yyyy, yyyy-mm-dd, dd/mm -> ISO date or None."""
     if not s:

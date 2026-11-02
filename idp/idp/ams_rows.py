@@ -22,10 +22,13 @@ sheet "Summary": where each block sits and what changed). Delivered to Chris in 
 never by email. Prints counts and the file path only.
 """
 import sys, os, io, re, json, base64, datetime, colorsys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import current_doa, before_doa  # noqa: E402
 
 COLS = 34  # A..AH
 C_PLAN, C_PDATE, C_FELLOW, C_NAME, C_MRN, C_AGE, C_ROOM = 3, 4, 2, 5, 6, 7, 8
 C_ADM, C_CONS, C_ISSUES, C_IND, C_ABX, C_START, C_END, C_CX = 12, 13, 16, 21, 22, 23, 24, 30
+C_LASTHOSP, C_ABXHIST = 17, 18  # earlier stays (< this admission's DOA) go only here (02.11.2026)
 GREEN = "#d9f2d0"
 HDR = "#d9d9d9"
 MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7, "aug": 8,
@@ -392,9 +395,25 @@ def fmt_date(d, year):
     return "%02d/%02d/%s" % (d[0], d[1], str(year)[2:])
 
 
+def block_doa(block, sy, today):
+    """This admission's DOA as dd/mm: the block's own cell, else the one-liner."""
+    m = re.search(r"(\d{1,2})[/.](\d{1,2})", str(block.cells[0][C_ADM - 1] or ""))
+    if m:
+        return "%02d/%02d" % (int(m.group(1)), int(m.group(2)))
+    return current_doa(sy.get("one_liner") or "", today.isoformat())
+
+
+def issue_date(dx):
+    m = re.search(r"\((\d{1,2}/\d{1,2})\)\s*(?:\||$)", dx or "")
+    return m.group(1) if m else None
+
+
 def refresh(block, p, today, new_entry):
     sy = p.get("synth") or {}
     year = today.year
+    doa = block_doa(block, sy, today)
+    iso = today.isoformat()
+    hist_abx, hist_iss = [], []
     # room
     room = str(sy.get("_room") or "").strip()
     if room and norm(room.replace(" ", "")) != norm(block.cells[0][C_ROOM - 1].replace(" ", "").replace(".0", "")):
@@ -410,6 +429,9 @@ def refresh(block, p, today, new_entry):
         for line in iss.get("abx") or []:
             a = parse_abx(line)
             if not a:
+                continue
+            if doa and a.get("end") and before_doa(a["start"], doa, iso) and before_doa(a["end"], doa, iso):
+                hist_abx.append(line)  # a course of an earlier stay: Abx history only, never Actual antibiotics
                 continue
             k = canon(a["drug"])
             st = ddmm(a["start"])
@@ -464,6 +486,11 @@ def refresh(block, p, today, new_entry):
     add = []
     for iss in sy.get("issues") or []:
         h = issue_head(iss.get("dx"))
+        ends = [parse_abx(l) for l in iss.get("abx") or []]
+        if doa and before_doa(issue_date(iss.get("dx")), doa, iso) and ends \
+                and all(x and x.get("end") and before_doa(x["end"], doa, iso) for x in ends):
+            hist_iss.append(h)  # an earlier stay's issue: last hospitalization only, never Active Issues
+            continue
         w = words(h)
         if h and (not w or len(w & words(ptxt)) / len(w) < 0.4):
             add.append((h,))
@@ -471,6 +498,12 @@ def refresh(block, p, today, new_entry):
     if add:
         block.add_rows((C_ISSUES,), add)
         block.log.append("issues +%d" % len(add))
+    for col, items, tag in ((C_LASTHOSP, hist_iss, "last hospitalization"), (C_ABXHIST, hist_abx, "abx history")):
+        known_h = block.col_text(col).lower()
+        new = [(x,) for x in items if x and x.lower()[:40] not in known_h]
+        if new:
+            block.add_rows((col,), new)
+            block.log.append("%s +%d" % (tag, len(new)))
     # dated plan lines (C/D) newer than the last plan date on the sheet
     last = None
     for row in block.cells:
@@ -501,15 +534,15 @@ def skeleton(p, fellow, today):
     sy = p.get("synth") or {}
     ol = sy.get("one_liner") or ""
     age = (re.match(r"\s*(\d{1,3})\s*[MF]\b", ol) or [None, ""])[1]
-    adm = re.search(r"\badm (\d{1,2}/\d{1,2})", ol)
     fs = p.get("first_seen") or today.isoformat()
+    adm = current_doa(ol, fs)  # never a prior stay or an 'adm MM/YYYY' in the PMH clause (02.11.2026)
     fsd = datetime.date.fromisoformat(fs)
     row = [""] * COLS
     row[C_FELLOW - 1] = fellow
     row[C_NAME - 1] = p.get("name") or sy.get("name") or ""
     row[C_MRN - 1] = p.get("mrn") or ""
     row[C_AGE - 1] = age
-    row[C_ADM - 1] = adm.group(1) if adm else ""
+    row[C_ADM - 1] = adm or ""
     row[C_CONS - 1] = "UC" if "uc" in [t.lower() for t in sy.get("_tags") or []] else fsd.strftime("%d/%m/%y")
     b = Block([row], [[None] * COLS], None)
     for c, v in enumerate(row):

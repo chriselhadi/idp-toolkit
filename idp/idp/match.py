@@ -60,7 +60,11 @@ class Registry:
         if mrn:
             for pid, rec in self.p.items():
                 if rec.get("mrn") and rec["mrn"] == mrn:
-                    return pid, "mrn"
+                    # MRN + phonetic name (02.11.2026): a shared MRN under a different name is flagged, not merged
+                    if max(name_sim(name, a) for a in [rec["name"]] + rec.get("aliases", [])) >= 0.34 or len(name_tokens(name)) < 2:
+                        return pid, "mrn"
+                    self.flags.append("MRN %s carries '%s' but %s is %s: not merged, check the MRN" % (mrn, name, pid, rec["name"]))
+                    return None, None
         for pid, rec in self.p.items():
             if nn and nn in [norm_name(a) for a in [rec["name"]] + rec.get("aliases", [])]:
                 return pid, "name"
@@ -112,32 +116,54 @@ def row_is_fresh(row, today, days=4):
     return best is not None and (t0 - best).days <= days
 
 
-def ward_lookup(wards, name, room):
-    """Find ward rows for a patient; owning doc wins over cardio/neuro duplicates."""
+_AGE_RE = re.compile(r"\b(\d{1,3})\s*(?:yo\b|y/o\b|yrs?\b|years?[- ]old\b|year[- ]old\b|[MF]\b)", re.I)
+
+
+def text_age(text):
+    """Age stated in a handoff row or one-liner ('40 Yo', '75F', '80 yo man'), else None."""
+    m = _AGE_RE.search(text or "")
+    if m and 0 < int(m.group(1)) < 120:
+        return int(m.group(1))
+    return None
+
+
+def patient_age(rec):
+    """Age of a census or state record: today's AS list, else the stored one-liner."""
+    a = (rec or {}).get("as_age")
+    try:
+        if a not in (None, "", "?"):
+            return int(str(a).strip().split()[0])
+    except ValueError:
+        pass
+    return text_age(((rec or {}).get("synth") or {}).get("one_liner", ""))
+
+
+def row_name(name):
+    """A handoff row's patient name without trailing care notes ('Jane Doe Uc dr X')."""
+    return re.sub(r"\s+(?:uc|cs|c/s|under care|consult|dr\.?)\b.*$", "", (name or "").strip(), flags=re.I) or (name or "")
+
+
+def ward_lookup(wards, name, room=None, age=None):
+    """Find ward rows for a patient by phonetic name, never by room (Gemini/Chris 02.11.2026: rooms change and
+    are shared; a room never identifies a patient). A row whose stated age differs from the patient's by more
+    than 1 year is another patient with a similar name. `room` is accepted for old callers and ignored.
+    Owning doc wins over cardio/neuro duplicates."""
     if not wards:
         return []
     hits = []
     for row in wards:
-        j = name_sim(name, row.get("name", ""))
-        if j >= 0.5 or (row.get("room") and room and row["room"].upper() == room.upper() and j >= 0.34):
+        j = name_sim(name, row_name(row.get("name", "")))
+        if j >= 0.5:
             hits.append((j, row))
-              # Once one row's room confirms the patient's room, distrust rows that contradict it:
-    # a fuzzy name match alone has attached other patients' rows (a 707A cardiology row
-    # onto an ICU6B patient). Rows with no room recorded are still kept.
-    if room:
-        ru = room.upper()
-        if any(h[1].get("room") and h[1]["room"].upper() == ru for h in hits):
-            hits = [h for h in hits if not (h[1].get("room") and h[1]["room"].upper() not in (ru, "?"))]
-    # A second-doc row (cardio/neuro) with no room to confirm it and a different admission date
-    # from the owning floors/ICU row is another patient with a similar name (27.09.2026: a
-    # cardiology bigeminy row, DOA 26/09, attached to a 709B patient admitted 24/09). Near-exact
-    # names (>= 0.8) are kept.
+    if age:
+        hits = [h for h in hits if text_age(h[1].get("text")) is None or abs(text_age(h[1].get("text")) - age) <= 1]
+    # A second-doc row (cardio/neuro) with a different admission date from the owning floors/ICU row is another
+    # patient with a similar name (27.09.2026: a cardiology bigeminy row, DOA 26/09, attached to a patient
+    # admitted 24/09). Near-exact names (>= 0.8) are kept.
     own_doa = {h[1]["doa"] for h in hits if h[1].get("doc") in ("floors", "icu") and h[1].get("doa")}
     if own_doa:
-        ru = (room or "").upper()
         hits = [h for h in hits if h[1].get("doc") in ("floors", "icu") or h[0] >= 0.8
-                or not h[1].get("doa") or h[1]["doa"] in own_doa
-                or (ru and (h[1].get("room") or "").upper() == ru)]
+                or not h[1].get("doa") or h[1]["doa"] in own_doa]
     hits.sort(key=lambda h: (-(h[1].get("doc") in ("floors", "icu")), -h[0]))
     return [h[1] for h in hits]
 
@@ -339,7 +365,7 @@ def main():
                 if p.get("once_only"):  # OVERLAY_R: once-only never enters, ward row or not
                     single_dose.append("%s %s: %s" % (p["room"], p["name"], ", ".join(p["drugs"])))
                     continue
-                if not p.get("once_only") or ward_lookup(wards, p["name"], p["room"]):
+                if not p.get("once_only") or ward_lookup(wards, p["name"], age=patient_age({"as_age": p.get("age")})):
                     pid = reg.add(p["name"], p["mrn"], today)
                 else:
                     continue
@@ -359,12 +385,15 @@ def main():
             continue
         if not row_is_fresh(row, today):
             continue  # handoff docs keep old rows for weeks; only rows touched in the last 4 days count
-        nm = (row.get("name") or "").strip()
+        nm = row_name(row.get("name") or "").strip()
         if len(nm) < 5 or re.search(r"patient x|template", nm, re.I):
             continue
         rr = parse_bed(row["room"])[0] if row.get("room") and row["room"] != "?" else None
-        if any(ward_lookup([row], c["name"], c["room"]) and (not rr or not c.get("room") or c["room"] in ("?", rr))
-               for c in census.values()):
+        hit = next((c for c in census.values()
+                    if ward_lookup([row], c["name"], age=patient_age(c) or patient_age(reg.p.get(c["pid"])))), None)
+        if hit:
+            if rr and hit.get("room") not in (None, "?", rr):  # the room is reported, never used to identify
+                flags.append("handoff doc room %s differs from today's list room %s for %s; kept today's room" % (rr, hit.get("room"), hit["pid"]))
             continue
         same = [c for c in census.values() if len(name_tokens(nm)) >= 2 and name_sim(nm, c["name"]) >= 0.5]
         if same:
@@ -372,14 +401,11 @@ def main():
                 flags.append("handoff doc room %s differs from today's list room %s for %s; kept today's room" % (rr, same[0].get("room"), same[0]["pid"]))
             continue
         pid, how = reg.find(nm)
-        if pid and how == "close" and rr:
-            cur = (census.get(pid) or {}).get("room") or (reg.p[pid].get("synth") or {}).get("_room")
-            if cur and cur != "?" and rr != cur and reg.p[pid].get("archived") != today:
-                if getattr(reg, "last_score", 0) >= 0.66:  # OVERLAY_6 4o: near-identical name, other room: same patient
-                    flags.append("CONFLICT room: %s handoff says %s, %s (%s) is in %s; one record kept" % (
-                        row.get("doc"), rr, pid, reg.p[pid]["name"], cur))
-                else:
-                    pid = None  # fuzzy name hit in another room: a different patient (not one who left the list today)
+        if pid and how == "close":
+            # never by room (02.11.2026): a fuzzy name hit is another patient only when the stated ages disagree
+            ra, pa = text_age(row.get("text")), patient_age(census.get(pid) or reg.p[pid])
+            if ra and pa and abs(ra - pa) > 1:
+                pid = None
         if pid and pid in census:
             continue
         if pid and reg.p[pid].get("archived"):
@@ -400,7 +426,7 @@ def main():
 
     # 3. Ward rows enrich; AMS enriches and audits.
     for pid, rec in census.items():
-        rows = ward_lookup(wards, rec["name"], rec["room"])
+        rows = ward_lookup(wards, rec["name"], age=patient_age(rec) or patient_age(reg.p.get(rec["pid"])))
         rec["ward_rows"] = rows
         if rows[:1] and rows[0].get("uc_id") and "uc" not in rec["tags"]:
             rec["tags"].append("uc")

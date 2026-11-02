@@ -7,7 +7,7 @@ keep them only when a source restated them today.
 """
 import sys, os, re, json, importlib.util, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
-from common import jload, iso_from_ddmm, status_line_ok, ROUTINE_LAB, IMAGING, find_doses  # OVERLAY_6 4a
+from common import jload, iso_from_ddmm, status_line_ok, ROUTINE_LAB, IMAGING, find_doses, current_doa, before_doa  # OVERLAY_6 4a
 
 
 def _strings(x):
@@ -83,6 +83,16 @@ def validate(mod, census, today):
         else:
             check_forbidden(ol, w + " one_liner", errors)
             if len(ol) > 400: warns.append("%s: one_liner %d chars, long" % (w, len(ol)))
+            # three-way date separation (02.11.2026): an issue dated before this admission's DOA is an earlier
+            # stay; it belongs in the one_liner / log_id (register: last hospitalization, Abx history), not in issues
+            doa = (cens[pid].get("as_admission") or "") and "%s/%s" % (cens[pid]["as_admission"][8:10], cens[pid]["as_admission"][5:7])
+            doa = doa or current_doa(ol, today)
+            for iss in (e.get("issues") or []) if doa else []:
+                mm = re.search(r"\((\d{1,2}/\d{1,2})\)\s*(?:\||$)", (iss or {}).get("dx", "") if isinstance(iss, dict) else "")
+                ends = [re.search(r"\d{1,2}/\d{1,2}-~?(\d{1,2}/\d{1,2})\b", l) for l in iss.get("abx") or []]
+                if mm and before_doa(mm.group(1), doa, today) and ends and all(x and before_doa(x.group(1), doa, today) for x in ends):
+                    errors.append("%s: issue dated %s is before this admission (DOA %s): an earlier stay goes in the one_liner/log_id, not issues: %s"
+                                  % (w, mm.group(1), doa, iss["dx"][:80]))
         if not isinstance(e["updates"], list) or not e["updates"]:
             errors.append(w + ": updates must be a non-empty list")
         else:
