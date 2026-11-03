@@ -42,11 +42,14 @@ TABS = {
                        "Micro recap", "Pendings", "Conflicts", "AMS block", "Updated"], 1, "patients"),
     "Feed Antimicrobials": (["pid", "Drug", "Line", "Issue", "Start", "End", "Running", "Updated"], 2, "antimicrobials"),
     "Feed Micro": (["pid", "Collected", "Specimen", "Result", "Status", "Late", "Updated"], 3, "micro"),
+    # Chris 03.11.2026: every lab specimen of the stay straight from Daily Cultures, finalised AND latest-not-finalised,
+    # never dropped; the Status label tells them apart ("Final dd/mm/yy" | "Not final, latest dd/mm/yy")
+    "Feed Cultures": (["pid", "Collected", "Specimen", "SID", "Result", "Status", "Source", "Updated"], 4, "labcx"),
 }
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-SCHEMA_VERSION = "2"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+SCHEMA_VERSION = "3"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
@@ -131,6 +134,22 @@ def spec_row(pid, s, discharged):
     late = "Y" if discharged and (s.get("final_date") or "") > discharged else "N"
     status = ("Final " + ddmm(s["final_date"])) if s.get("final") and s.get("final_date") else ("Final" if s.get("final") else "Preliminary")
     return [pid, ddmm(s.get("collected")), s.get("specimen", ""), res, status, late]
+
+
+def lab_row(pid, s):
+    """Feed Cultures row: one lab specimen, finalised or not, labelled so the two never mix."""
+    org = "; ".join(o if isinstance(o, str) else o.get("name", "") for o in s.get("organisms") or [])
+    ast = " ".join(x for x in ("S: " + s["ast_s"] if s.get("ast_s") else "", "I: " + s["ast_i"] if s.get("ast_i") else "",
+                               "R: " + s["ast_r"] if s.get("ast_r") else "") if x)
+    res = " | ".join(x for x in (org, ast, s.get("result", "")) if x)
+    if s.get("verify"):
+        res += " (to verify)"
+    if s.get("final"):
+        status = "Final " + ddmm(s["final_date"]) if s.get("final_date") else "Final"
+    else:
+        latest = s.get("updated") or s.get("unchanged_since") or s.get("file_date") or ""
+        status = "Not final, latest " + ddmm(latest) if latest else "Not final"
+    return [pid, ddmm(s.get("collected")), s.get("specimen", ""), s.get("sid") or "", res, status, s.get("source", "")]
 
 
 def build(state, census, ams, cx, today, infeed=(), backlog=10):
@@ -226,6 +245,18 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
             for s in stay_specimens(cx, rec.get("mrn"), rec.get("name"), rec.get("aliases"), rec.get("first_seen"), rec.get("last_seen")):
                 if (s.get("final_date") or "9999") > (rec.get("last_seen") or ""):
                     rows["Feed Micro"].append(spec_row(pid, s, rec.get("last_seen")))
+    # Feed Cultures: every specimen of the stay for each patient in the feed, final and not final alike
+    for pid, rec, status in pts:
+        if cx:
+            adm = (cen.get(pid) or {}).get("as_admission")
+            first = min(x for x in (adm, rec.get("first_seen")) if x) if (adm or rec.get("first_seen")) else None
+            for s in stay_specimens(cx, rec.get("mrn"), rec.get("name"), rec.get("aliases"), first,
+                                    None if status == "Active" else rec.get("last_seen")):
+                rows["Feed Cultures"].append(lab_row(pid, s))
+    for pid, w in (state.get("watch") or {}).items():
+        for s in stay_specimens(cx, w.get("mrn"), w.get("name"), w.get("aliases"), None, None):
+            if (s.get("collected") or "") >= (dt.date.fromisoformat(w["discharged"]) - dt.timedelta(days=30)).isoformat():
+                rows["Feed Cultures"].append(lab_row(pid, s))
     out = {}
     for t, (hdr, nkey, _) in TABS.items():
         seen, lst = {}, []
@@ -699,6 +730,7 @@ def schema_rows(which):
                 ["Feed Patients", "Status = Watch dd/mm/yy", "", "Block FINAL in Index; late cultures of the stay still arriving (Feed Micro, Late = Y)."],
                 ["Feed Antimicrobials", "pid + Drug", j(TABS["Feed Antimicrobials"][0]), "One row per course; a second course of the same drug is 'Drug #2'. Start/End dd/mm, ~ approximate, ? not documented. Running Y/N."],
                 ["Feed Micro", "pid + Collected + Specimen", j(TABS["Feed Micro"][0]), "One row per specimen or pending item. Status: Final | Final dd/mm/yy | Preliminary | Pending. Late = Y: final after discharge."],
+                ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives."],
                 ["Feed Changes", "(log, append only)", j(CHANGES), "Every cell the run changed: Old and New values. (new row) and (removed) for whole rows."],
                 ["(any tab)", "a pid absent from Feed Patients", "", "The admission has left the feed: its block is FINAL and no culture is awaited."]]
     return [SCHEMA_HDR,

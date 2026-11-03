@@ -28,6 +28,7 @@ import json
 import os
 import re
 
+MD_ESC = re.compile(r"\\([\\`*_{}\[\]()#+\-.!|~>=])")
 TITLE_RE = re.compile(r"^###\s+(.+?)\s+\(")
 FILE_RE = re.compile(r"Cultures (\d{4}-\d{2}-\d{2})")
 DIGEST_RE = re.compile(r"^\*Micro Digest (\d{2})/(\d{2})/(\d{4})\*")
@@ -105,7 +106,9 @@ def parse_digest(title, text):
     part, patient, spec = None, None, None
     specimens, report, verify, unparsed = [], [], [], []
     for raw in text.splitlines():
-        line = raw.rstrip()
+        # Drive's read_file_content returns the digests Markdown-escaped ("\\- \\[PRELIM\\] \\*Sputum\\*", "\\_01/11\\_"):
+        # undo the escaping first, or no specimen line matches and every non-final result is silently lost (03.11.2026)
+        line = MD_ESC.sub(r"\1", raw).rstrip()
         if not line.strip():
             continue
         m = DIGEST_RE.match(line)

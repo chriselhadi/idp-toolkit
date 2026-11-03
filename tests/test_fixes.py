@@ -211,7 +211,19 @@ ok("idp11_apostrophe", X.cell("123456") == "'123456" and X.cell("05/10") == "'05
    and X.cell("Mero IV q8h") == "Mero IV q8h" and X.bare("'05/10") == "05/10")
 ok("idp11_dates_ddmmyy", X.dmy("2026-10-29") == "29/10/26")
 hdr = X.TABS["Feed Patients"][0]
-ok("idp11_feed_header_v2", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "2")
+ok("idp11_feed_header_v3", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "3"
+   and X.TABS["Feed Cultures"][0][:6] == ["pid", "Collected", "Specimen", "SID", "Result", "Status"])
+# Feed Cultures labels: finalised vs latest-not-finalised, never dropped (Chris 03.11.2026)
+lr_f = X.lab_row("Q9001", {"collected": "2026-10-30", "specimen": "Urine", "final": True, "final_date": "2026-11-01", "result": "no growth"})
+lr_o = X.lab_row("Q9001", {"collected": "2026-10-31", "specimen": "Urine", "final": False, "updated": "2026-11-02", "result": "50,000 col/ml"})
+ok("idp11_feed_cultures_labels", lr_f[5] == "Final 01/11/26" and lr_o[5] == "Not final, latest 02/11/26", "%r %r" % (lr_f, lr_o))
+# Drive returns digests Markdown-escaped; the reader must still see every specimen (03.11.2026)
+import importlib.util as _ilu
+_s = _ilu.spec_from_file_location("cultures_t", os.path.join(I, "cultures.py")); CX = _ilu.module_from_spec(_s); _s.loader.exec_module(CX)
+_esc = ("\\*Micro Digest 02/11/2026\\*\n\\*Test Patient\\* (DOB \\_01/01/1950\\_ | MRN \\_900001\\_ | \\_ICU\\_)\n"
+        "\\- \\[PRELIM\\] \\*Urine\\* (SID \\_123\\_, coll. \\_31/10\\_): 50,000 col/ml\n")
+_r = CX.parse_digest("Cultures 2026-11-02", _esc)
+ok("cultures_markdown_escaped", len(_r[0]) == 1 and not _r[0][0]["final"], repr(_r[0])[:200])
 des = {"Feed Patients": [["Q9001", "'900001", "Alpha Example", "Active"] + [""] * 18,
                          ["Q9002", "'900002", "Beta Example", "Discharged 20/10/26"] + [""] * 18]}
 cv = X.coverage({"Feed Patients": [[r[0].replace("Q", "P")] + r[1:] for r in des["Feed Patients"]]},
