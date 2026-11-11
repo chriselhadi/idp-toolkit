@@ -230,7 +230,9 @@ def compute_delta(as_today, as_yday):
     td, yd = as_today.get("list_date"), as_yday.get("list_date")
     if td and yd and td <= yd:  # Chris 01.11.2026: always today's list vs an earlier day's, never the same day
         return {"computed": False, "reason": "same-day comparison refused: list %s vs baseline %s (today's AS list not in yet?)" % (td, yd)}
-    Y = {p["mrn"]: p for p in as_yday["patients"]}
+    # 11.11.2026 (Chris): a patient whose orders yesterday were all once-only was not on yesterday's list in any
+    # sense that matters; starting standing therapy today makes them NEW ON LIST, not a change.
+    Y = {p["mrn"]: p for p in as_yday["patients"] if not p.get("once_only")}
     T = {p["mrn"]: p for p in as_today["patients"]}
     new = [T[m] for m in T if m not in Y and not T[m].get("once_only")]
     off = [Y[m] for m in Y if m not in T and not Y[m].get("once_only")]
@@ -335,7 +337,7 @@ def main():
     # 2. AS list: rooms first; new names enter as new consults (standing therapy or ward-doc match); ONCE-only names are shots.
     single_dose = []
     as_offlist = []  # OVERLAY_8 D8
-    Y_MRNS = {q.get("mrn") for q in ((as_yday or {}).get("patients") or [])}
+    Y_MRNS = {q.get("mrn") for q in ((as_yday or {}).get("patients") or []) if not q.get("once_only")}  # 11.11.2026: once-only yesterday = new today
     if as_today:
         for p in as_today["patients"]:
             pid, how = reg.find(p["name"], p["mrn"])
