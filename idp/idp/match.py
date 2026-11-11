@@ -269,6 +269,8 @@ def main():
     ap.add_argument("--date", required=True); ap.add_argument("--roster"); ap.add_argument("--allow-orphans", action="store_true",
                     help="proceed past the orphan guard once the ward parse is confirmed sound")
     ap.add_argument("--as-yday")
+    ap.add_argument("--update-text", nargs="*", default=[], help="update emails / service list read today: a new-on-list patient named "
+                    "or MRN-cited in any of them is known to the service and is not tagged NEW TO SERVICE (Chris, 11.11.2026)")
     ap.add_argument("--orphans-confirmed", help="file, one name per line: orphans confirmed absent from every ward doc")  # OVERLAY_6 4q
     ap.add_argument("--last-delta-sent", help="DD.MM.YYYY from the subject of the newest 'AS List Delta Report' already "
                     "in Gmail; the delta baseline becomes the newest stored AS list on or before that date")
@@ -495,6 +497,21 @@ def main():
     new_mrns = sorted({r["mrn"] for r in ordered if r.get("mrn") and (
         (r["mrn"] in delta_new and r["orphan"]) or "new" in r["tags"])})
     jdump(new_mrns, os.path.join(a.out, "new_mrns.json"))
+    # 11.11.2026 (Chris): NEW TO SERVICE in the Delta Report = new on today's list AND not mentioned in that day's
+    # update (update emails, fellows' service list): practically unknown to the service until the email.
+    upd = ""
+    for f in (a.update_text or []):
+        try:
+            upd += "\n" + open(f, encoding="utf-8", errors="ignore").read().lower()
+        except OSError:
+            pass
+    def _mentioned(p):
+        if p.get("mrn") and re.search(r"(?<!\d)%s(?!\d)" % re.escape(str(p["mrn"])), upd):
+            return True
+        toks = [t for t in re.sub(r"[^a-z ]+", " ", (p.get("name") or "").lower()).split() if len(t) >= 4]
+        return bool(toks) and re.search(r"\b%s\b" % re.escape(toks[-1]), upd) is not None  # surname, in name order
+    nts = sorted(p["mrn"] for p in delta.get("new", []) if p.get("mrn") and not _mentioned(p)) if delta.get("computed") else []
+    jdump(nts, os.path.join(a.out, "new_to_service.json"))
     # census "new" follows the same rule, so the handout shades exactly the rule-E patients.
     for r in ordered:
         r["new"] = bool(r.get("mrn") in new_mrns) if new_mrns or delta.get("computed") else r["new"]

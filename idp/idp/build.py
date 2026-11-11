@@ -59,7 +59,8 @@ def main():
     # Email 1, the AS delta (Amendment C): built here from match.py's delta.json and
     # new_mrns.json, so the run never has to remember a separate render step.
     run(os.path.join(HERE, "render_delta.py"), os.path.join(out, "delta.json"), a.as_today,
-        os.path.join(out, "new_mrns.json"), os.path.join(out, "delta2.html"), os.path.join(out, "delta2.txt"))
+        (os.path.join(out, "new_to_service.json") if os.path.exists(os.path.join(out, "new_to_service.json")) else os.path.join(out, "new_mrns.json")),
+        os.path.join(out, "delta2.html"), os.path.join(out, "delta2.txt"))
     run(os.path.join(HERE, "state_io.py"), "finalize", os.path.join(out, "state_matched.json"), synth, os.path.join(out, "census.json"),
         a.as_today, a.date, os.path.join(out, "state_new.json"))
     run(os.path.join(HERE, "state_io.py"), "pack", os.path.join(out, "state_new.json"), os.path.join(out, "state_parts"))

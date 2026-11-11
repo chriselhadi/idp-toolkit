@@ -135,8 +135,8 @@ def main():
         '<div style="font-size:18px;font-weight:700;color:%s">AS List Delta Report</div>'
         '<div style="font-size:13px;color:%s;margin:4px 0 0 0;line-height:1.4">%s</div>'
         '%s%s%s'
-        '<div style="font-size:11px;color:%s;margin:18px 0 0 0;line-height:1.4">Rows tagged NEW TO SERVICE are new on today\'s list with no row '
-        'in any ward handoff doc, or are named as a new patient in the daily update.</div>'
+        '<div style="font-size:11px;color:%s;margin:18px 0 0 0;line-height:1.4">Rows tagged NEW TO SERVICE are new on today\'s list and not '
+        'mentioned in today\'s update: unknown to the service until this email.</div>'
         '</div>'
         % (INK, MUTED, meta,
            section("New on list", ct["new"], ncards),
@@ -180,7 +180,7 @@ def main():
         L.append("  None.")
     L += ["", "UNCHANGED, STILL ON RESTRICTED ABX (%d)" % len(unchanged), ""]
     L += ["%s %s: %s" % (p.get("room") or "?", tc(p["name"]), regimen(p)) for p in unchanged] or ["  None."]
-    L += ["", "NEW TO SERVICE = new on today's list with no ward handoff row, or named as a new patient in the daily update."]
+    L += ["", "NEW TO SERVICE = new on today's list and not mentioned in today's update: unknown to the service until this email."]
     txt = "\n".join(L)
     assert "—" not in txt and "–" not in txt, "dash in output"
     assert "—" not in doc and "–" not in doc, "dash in html"
