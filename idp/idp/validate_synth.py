@@ -52,6 +52,49 @@ def check_forbidden(text, where, errors):
             errors.append("%s: unattributed '%s' in: %s" % (where, m.group(0), text))
 
 
+# The one-liner's shape (14.11.2026): the AMS Register app lays it out as WHO / NOW / BEFORE / IM, reading these
+# segments, so they are fixed. Segments are separated by " ; ", in this order:
+#   1. "<age><sex>, <background>, <background>"   e.g. "71M, DM2, CKD 3b, recurrent ESBL UTI"   (sex ? if unknown)
+#   2. "prior adm <mm/yyyy>[ + <mm/yyyy>] <what for>"   only when there are earlier stays
+#   3. "adm <dd/mm> <how / where> w/ <presentation>"   this admission ("adm ?" when the date is unknown)
+#   4. "IM: <internal medicine picture>"              always last
+ONE_AGE = re.compile(r"^\d{1,3}\s*(?:y|yo|yrs?|m|mo|w|wk|d)?\s*[MF?]\b", re.I)
+ONE_ADM = re.compile(r"^(?:re)?adm(?:itted)?\b", re.I)
+ONE_PRIOR = re.compile(r"^prior\b", re.I)
+ONE_EARLIER = re.compile(r"\b(?:prior|previous|prev)\s+adm|\b\d{1,2}/(?:19|20)\d{2}\b", re.I)
+
+
+def one_liner_segments(ol):
+    out, depth, cur = [], 0, ""
+    for ch in ol:
+        depth = depth + 1 if ch == "(" else max(0, depth - 1) if ch == ")" else depth
+        if ch == ";" and depth <= 0:
+            out.append(cur.strip()); cur = ""; continue
+        cur += ch
+    out.append(cur.strip())
+    return [x for x in out if x]
+
+
+def one_liner_shape(ol, w, errors, warns):
+    segs = one_liner_segments(ol)
+    if not segs or not segs[-1].startswith("IM:"):
+        errors.append("%s: one_liner shape: 'IM: ...' must be its own last segment after ' ; ': %s" % (w, ol))
+        return
+    head = segs[0]
+    if not ONE_AGE.match(head):
+        warns.append("%s: one_liner shape: start with age and sex, e.g. '71M, DM2, CKD 3b ; ...' (sex ? if unknown): %s" % (w, ol))
+    rest = segs[1:-1]
+    adm = [x for x in rest if ONE_ADM.match(x)]
+    if len(adm) != 1:
+        warns.append("%s: one_liner shape: one segment 'adm <dd/mm> <how / where> w/ <presentation>' for this admission ('adm ?' if unknown): %s" % (w, ol))
+    for x in [head] + adm:
+        if ONE_EARLIER.search(x):
+            warns.append("%s: one_liner shape: earlier stays go in their own segment 'prior adm <mm/yyyy> <what for>', not in: %s" % (w, x))
+    for x in rest:
+        if not (ONE_ADM.match(x) or ONE_PRIOR.match(x)):
+            warns.append("%s: one_liner shape: segment is neither 'prior adm ...' nor 'adm ...': %s" % (w, x))
+
+
 def validate(mod, census, today):
     errors, warns = [], []
     S = getattr(mod, "SYNTH", None)
@@ -83,6 +126,7 @@ def validate(mod, census, today):
         else:
             check_forbidden(ol, w + " one_liner", errors)
             if len(ol) > 400: warns.append("%s: one_liner %d chars, long" % (w, len(ol)))
+            one_liner_shape(ol, w, errors, warns)
             # three-way date separation (02.11.2026): an issue dated before this admission's DOA is an earlier
             # stay; it belongs in the one_liner / log_id (register: last hospitalization, Abx history), not in issues
             doa = (cens[pid].get("as_admission") or "") and "%s/%s" % (cens[pid]["as_admission"][8:10], cens[pid]["as_admission"][5:7])

@@ -32,6 +32,7 @@ dosecheck() {
 }
 
 # ---------------- Day 1: 2026-09-06, cold start ----------------
+python3 "$T/tests/test_one_liner.py" || exit 1
 python3 "$T/tests/make_fixture.py" "$D1" 2026-09-06
 cd "$D1"
 python3 "$I/parse_as.py" in/as.eml in/as_today.json | tee as_parse.txt
