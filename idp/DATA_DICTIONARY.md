@@ -28,7 +28,7 @@ pseudonymised.
 
 Notes
 - `start_approx` / `end_approx` true: the date comes from the AS list only (pharmacy verification, not administration).
-- `days` sums the segments, so a drug held and restarted is not inflated.
+- `days` sums the segments, so a drug held and restarted is not inflated. Each segment counts end minus start (a running one ends today): started today, or a single dose, is 0 (changed 17.11.2026; it was end minus start plus one).
 - The daily snapshot design means a course appears on every day it is on record; deduplicate on (pid, drug, start)
   for course-level analysis, and take the last date per course for its final state.
 - `IDP Dashboard YYYY-MM-DD.json` in the same folder holds the full structured day the app reads (schema 1).
