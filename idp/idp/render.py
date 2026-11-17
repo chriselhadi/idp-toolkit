@@ -12,7 +12,7 @@ import idp9  # OVERLAY_9
 
 
 def seg_days(segs, today):
-    """Sum of days inside segments; open segment ends today. Returns int or None if any date unknown."""
+    """Days inside segments, each end minus start (open segment ends today; started today = D0). None if any date unknown."""
     y = int(today[:4]); total = 0
     for seg in segs.split(", "):
         m = re.match(r"^~?(\d{2}/\d{2})-~?(\d{2}/\d{2})?$", seg)
@@ -22,9 +22,9 @@ def seg_days(segs, today):
                 return None
             if a > today:  # a start after today means the drug is dated last year
                 a = iso_from_ddmm(m.group(1), y - 1)
-            total += (dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days + 1
+            total += (dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days  # today - start (started today = D0), as the app counts
         elif seg.startswith("x1 "):
-            total += 1
+            total += 0  # a single dose adds no day
         else:
             return None
     return total
