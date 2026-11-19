@@ -23,7 +23,7 @@ REG_HEADER = ["Key", "Status", "FELLOW", "Plan", "Plan Date", "Pt name", "MRN", 
 LATE_HEADER = ["Key", "MRN", "Name", "Added", "Collected", "Specimen", "Status", "Organism", "Antibiogram", "Result"]
 WATCH_MAX_DAYS = 14
 FIELDS = ("name", "one_liner", "issues", "abx_other", "micro", "micro_recap", "vitals", "pendings", "id_plan",
-          "conflicts", "not_applied", "im_detail")
+          "conflicts", "not_applied", "im_detail", "steroids", "devices")
 
 FOLD = {"–": "-", "—": "-", "→": "->", "←": "<-", "≤": "<=", "≥": ">=", " ": " ",
         "×": "x", "°": " deg", "⊕": "+", "⊖": "-", "’": "'", "‘": "'",
@@ -157,6 +157,7 @@ def cmd_base(a):
             e.setdefault("abx_other", []); e.setdefault("micro", []); e.setdefault("pendings", [])
             e.setdefault("vitals", []); e.setdefault("id_plan", []); e.setdefault("conflicts", [])
             e.setdefault("not_applied", {}); e.setdefault("im_detail", [])
+            e.setdefault("steroids", []); e.setdefault("devices", [])  # BF 19.11.2026
             if not e["micro"]:
                 e.pop("micro_recap", None)
             e["updates"] = ["no change since %s handout" % yday]
@@ -204,7 +205,7 @@ def _drug_slot(e, drug, pid):
 
 def apply_delta(e, d, pid):
     for k in ("updates", "updates_nonid", "one_liner", "id_plan", "vitals", "micro_recap", "conflicts",
-              "not_applied", "im_detail", "log_id", "log_im"):
+              "not_applied", "im_detail", "log_id", "log_im", "steroids", "devices"):
         if k in d:
             e[k] = d[k]
     for pre in d.get("pend_close", []):

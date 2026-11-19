@@ -212,6 +212,9 @@ def block(c, e, today, dropped):
         L.append("Micro: " + e["micro_recap"])
     if e["vitals"]:
         L.append("Status: " + status_ward(c, e["vitals"][0]))
+    # BF 19.11.2026: fixed-label lines the AMS app reads; always printed, "none documented" when empty
+    L.append("Steroids: " + ("; ".join(e.get("steroids") or []) or "none documented"))
+    L.append("Lines: " + ("; ".join(e.get("devices") or []) or "none documented"))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_short(p) for p in e["pendings"]))
     L.append(idp9.plan_line(e))  # OVERLAY_9 AD3

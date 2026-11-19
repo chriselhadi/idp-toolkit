@@ -163,6 +163,7 @@ def patient_record(pid, rec, ref):
         "pendings": [parse_pending(p, ref) for p in s.get("pendings") or []],
         "conflicts": s.get("conflicts") or [], "not_applied": s.get("not_applied") or {},
         "im_detail": s.get("im_detail") or [],
+        "steroids": s.get("steroids") or [], "devices": s.get("devices") or [],  # BF 19.11.2026
         # Carried in state day to day and found nowhere else (not in the AMS sheet, not in any email): the uncapped
         # narratives, the carry-over line, the drug history and the pending ledger. Kept here so the daily file in
         # Drive, which is never deleted, holds them permanently once the rolling state files are pruned.

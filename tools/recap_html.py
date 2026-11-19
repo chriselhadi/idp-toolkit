@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import sys, html, re
-LABELS = ("Update (ID):", "Update (other):", "IM:", "Rx (unlinked):", "Micro:", "Status:", "Pending:", "ID Plan:")
+LABELS = ("Update (ID):", "Update (other):", "IM:", "Rx (unlinked):", "Micro:", "Status:", "Steroids:", "Lines:", "Pending:", "ID Plan:")
 GREEN, RED, BLACK = "#1a7f37", "#c00000", "#000000"
 lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
 out, expect_hist, in_off = [], False, False

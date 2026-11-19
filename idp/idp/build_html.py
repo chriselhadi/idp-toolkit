@@ -21,7 +21,7 @@ from common import WARD_ORDER, jload
 # Shading goes through the bgcolor attribute: Gmail strips "background:" from inline styles.
 TD = "border:1px solid #808080;padding:2px 4px;vertical-align:top;text-align:left"
 
-KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Pending: ", "ID Plan: ")  # OVERLAY_9
+KEYS = ("IM detail: ", "Conflict: ", "Update: ", "Abx (unlinked): ", "Micro: ", "Status: ", "Imaging/key labs: ", "Vitals/Imaging: ", "Steroids: ", "Lines: ", "Pending: ", "ID Plan: ")  # OVERLAY_9
 
 
 INK, MUTED, LINE, GREY, WHITE = "#141414", "#5f5f5f", "#dcdcdc", "#f0f0f0", "#ffffff"
