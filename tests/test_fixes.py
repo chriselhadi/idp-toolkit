@@ -212,16 +212,29 @@ ok("idp11_apostrophe", X.cell("123456") == "'123456" and X.cell("05/10") == "'05
 ok("idp11_dates_ddmmyy", X.dmy("2026-10-29") == "29/10/26")
 hdr = X.TABS["Feed Patients"][0]
 ok("idp11_feed_header_v4", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "4"
-   and X.TABS["Feed Cultures"][0][:9] == ["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Status"]
+   and X.TABS["Feed Cultures"][0][:10] == ["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Pattern", "Status"]
    and X.TABS["Feed Daily Report"][0][:5] == ["pid", "Date", "Bench no.", "Specimen", "Preliminary result"])
 # Feed Cultures labels: finalised vs latest-not-finalised, never dropped (Chris 03.11.2026)
 lr_f = X.lab_row("Q9001", {"collected": "2026-10-30", "specimen": "Urine", "final": True, "final_date": "2026-11-01", "result": "no growth"})
 lr_o = X.lab_row("Q9001", {"collected": "2026-10-31", "specimen": "Urine", "final": False, "updated": "2026-11-02", "result": "50,000 col/ml"})
-ok("idp11_feed_cultures_labels", lr_f[8] == "Final 01/11/26" and lr_o[8] == "Not final, latest 02/11/26", "%r %r" % (lr_f, lr_o))
+ok("idp11_feed_cultures_labels", lr_f[9] == "Final 01/11/26" and lr_o[9] == "Not final, latest 02/11/26", "%r %r" % (lr_f, lr_o))
 # schema 4: the Summary never splits C. diff and keeps it next to an organism (Chris 19.11.2026)
 lr_c = X.lab_row("Q9001", {"collected": "2026-11-16", "specimen": "Stool", "final": True, "organisms": ["Candida albicans"],
                            "result": "numerous yeast. SS lac+. C. difficile Ag and toxins negative. Final 18/11."})
 ok("idp11_feed_cultures_summary", lr_c[4] == "Candida albicans; C. difficile Ag and toxins negative" and lr_c[5] == "Candida albicans", repr(lr_c))
+# Pattern: fixed rules from the lab AST, never a guess (Chris 20.11.2026)
+_pt = lambda orgs, **k: X.lab_pattern(orgs, k)
+ok("idp11_pattern", _pt(["Pseudomonas aeruginosa"], ast_s="Cipro, Levo, Amik", ast_r="Mero, Piptaz, Cefta-Avi", final=False) == "carbapenem R, ceftazidime-avibactam R"
+   and _pt(["E. coli (ESBL)"], ast_s="Mero, Amik", ast_r="Ceftri, Cipro") == "ESBL, FQ R"
+   and _pt(["Klebsiella pneumoniae"], ast_s="Mero", ast_r="Amp, Ceftri") == "3rd-gen ceph R"
+   and _pt(["S. aureus"], ast_s="Vanco", ast_r="Pen, Oxa") == "MRSA"
+   and _pt(["Candida albicans"], ast_s="Vorico (0.25)", ast_r="Fluco (16)") == "fluconazole R"
+   and _pt(["E. coli"], final=False) == "AST pending"
+   and _pt(["Citrobacter koseri"], ast_s="Erta, Mero", ast_r="Amp, Erta") == "AST conflicting, check"
+   and _pt(["Serratia marcescens", "Pseudomonas aeruginosa"], ast_s="Mero, Gent", ast_r="Col, Mero") == "AST not split by organism; AST not split by organism"
+   and _pt(["Serratia marcescens", "Pseudomonas aeruginosa"], ast_s="S. marcescens: Mero, Ceftri | P. aeruginosa: Gent, Aztr",
+           ast_r="S. marcescens: Col | P. aeruginosa: Piptaz, Cefep, Ceftaz, Imi, Mero, Cipro, Levo") == "pan-S; carbapenem R",
+   "pattern")
 _cx = {"specimens": [{"dr": "8001/8002"}], "daily_report": [
     {"bench": "8001", "patient": "Alpha Beta Example", "result": "Blood: GNB", "file": "Cultures 2026-11-19"},
     {"bench": "8003", "patient": "Alpha Example", "result": "Sputum: yeast", "file": "Cultures 2026-11-19"}]}
