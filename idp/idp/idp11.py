@@ -44,12 +44,16 @@ TABS = {
     "Feed Micro": (["pid", "Collected", "Specimen", "Result", "Status", "Late", "Updated"], 3, "micro"),
     # Chris 03.11.2026: every lab specimen of the stay straight from Daily Cultures, finalised AND latest-not-finalised,
     # never dropped; the Status label tells them apart ("Final dd/mm/yy" | "Not final, latest dd/mm/yy")
-    "Feed Cultures": (["pid", "Collected", "Specimen", "SID", "Result", "Status", "Source", "Updated"], 4, "labcx"),
+    # schema 4 (Chris 19.11.2026): structured columns so the app never splits free text; the raw bench text moves to Notes
+    "Feed Cultures": (["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Status", "Source", "Notes",
+                       "Updated"], 4, "labcx"),
+    # schema 4: Daily Report findings (bench preliminary line) while no culture row with that bench number exists yet
+    "Feed Daily Report": (["pid", "Date", "Bench no.", "Specimen", "Preliminary result", "Updated"], 3, "dailyreport"),
 }
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-SCHEMA_VERSION = "3"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+SCHEMA_VERSION = "4"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
@@ -136,20 +140,67 @@ def spec_row(pid, s, discharged):
     return [pid, ddmm(s.get("collected")), s.get("specimen", ""), res, status, late]
 
 
+_NEG = re.compile(r"\b(no growth( so far)?|no organisms?( detected)?|negative|neg|all negative|no salmonella or shigella|no s\. aureus)\b", re.I)
+_CDIFF = re.compile(r"C\.? ?diff\w*[^.;|]*", re.I)
+
+
+def lab_summary(s, org):
+    """One line in the card style: what grew (or the negative result) and the deciding AST, no bench shorthand."""
+    txt = s.get("result", "") or ""
+    cd = [m.group(0).strip() for m in _CDIFF.finditer(txt)]
+    if org:
+        out = org
+        if s.get("ast_s"):
+            out += " S " + s["ast_s"]
+        if s.get("ast_r"):
+            out += ", R " + s["ast_r"]
+        return "; ".join([out] + [c for c in dict.fromkeys(cd) if c.lower() not in out.lower()])
+    bits = list(cd)
+    m = re.search(r"no growth( so far)?", txt, re.I) or _NEG.search(txt)
+    if m and not bits:
+        bits.append(m.group(0).lower())
+    if not bits:
+        bits.append(re.split(r"(?<=[a-z])\. ", txt)[0].strip()[:100])
+    return "; ".join(dict.fromkeys(b for b in bits if b))
+
+
 def lab_row(pid, s):
-    """Feed Cultures row: one lab specimen, finalised or not, labelled so the two never mix."""
+    """Feed Cultures row: one lab specimen, finalised or not, labelled so the two never mix (schema 4 columns)."""
     org = "; ".join(o if isinstance(o, str) else o.get("name", "") for o in s.get("organisms") or [])
-    ast = " ".join(x for x in ("S: " + s["ast_s"] if s.get("ast_s") else "", "I: " + s["ast_i"] if s.get("ast_i") else "",
-                               "R: " + s["ast_r"] if s.get("ast_r") else "") if x)
-    res = " | ".join(x for x in (org, ast, s.get("result", "")) if x)
+    summ = lab_summary(s, org)
     if s.get("verify"):
-        res += " (to verify)"
+        summ += " (to verify)"
     if s.get("final"):
         status = "Final " + ddmm(s["final_date"]) if s.get("final_date") else "Final"
     else:
         latest = s.get("updated") or s.get("unchanged_since") or s.get("file_date") or ""
         status = "Not final, latest " + ddmm(latest) if latest else "Not final"
-    return [pid, ddmm(s.get("collected")), s.get("specimen", ""), s.get("sid") or "", res, status, s.get("source", "")]
+    return [pid, ddmm(s.get("collected")), s.get("specimen", ""), s.get("sid") or "", summ, org, s.get("ast_s", ""),
+            s.get("ast_r", ""), status, s.get("source", ""), s.get("result", "")]
+
+
+def daily_rows(pid, rec, cx, first):
+    """Daily Report lines for this patient whose bench number has no culture row yet (Chris 19.11.2026)."""
+    have = set()
+    for s in cx.get("specimens", []):
+        for b in re.split(r"[/,; ]+", str(s.get("dr") or "")):
+            if b.strip():
+                have.add(b.strip())
+    names = [rec.get("name") or ""] + list(rec.get("aliases") or [])
+    lo = (dt.date.fromisoformat(first) - dt.timedelta(days=5)).isoformat() if first else ""
+    out = []
+    for r in cx.get("daily_report", []):
+        if not any(I.name_match(r.get("patient", ""), n) for n in names if n):
+            continue
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", r.get("file", ""))
+        day = m.group(1) if m else ""
+        if lo and day and day < lo:
+            continue
+        if str(r.get("bench", "")).strip() in have:
+            continue
+        spec, _, res = (r.get("result", "") or "").partition(":")
+        out.append([pid, ddmm(day), str(r.get("bench", "")), spec.strip(), res.strip()])
+    return out
 
 
 def build(state, census, ams, cx, today, infeed=(), backlog=10):
@@ -253,6 +304,12 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
             for s in stay_specimens(cx, rec.get("mrn"), rec.get("name"), rec.get("aliases"), first,
                                     None if status == "Active" else rec.get("last_seen")):
                 rows["Feed Cultures"].append(lab_row(pid, s))
+    # Feed Daily Report: bench preliminary lines not yet superseded by a culture row (active patients)
+    for pid, rec, status in pts:
+        if cx and status == "Active":
+            adm = (cen.get(pid) or {}).get("as_admission")
+            first = min(x for x in (adm, rec.get("first_seen")) if x) if (adm or rec.get("first_seen")) else None
+            rows["Feed Daily Report"].extend(daily_rows(pid, rec, cx, first))
     for pid, w in (state.get("watch") or {}).items():
         for s in stay_specimens(cx, w.get("mrn"), w.get("name"), w.get("aliases"), None, None):
             if (s.get("collected") or "") >= (dt.date.fromisoformat(w["discharged"]) - dt.timedelta(days=30)).isoformat():
@@ -730,7 +787,8 @@ def schema_rows(which):
                 ["Feed Patients", "Status = Watch dd/mm/yy", "", "Block FINAL in Index; late cultures of the stay still arriving (Feed Micro, Late = Y)."],
                 ["Feed Antimicrobials", "pid + Drug", j(TABS["Feed Antimicrobials"][0]), "One row per course; a second course of the same drug is 'Drug #2'. Start/End dd/mm, ~ approximate, ? not documented. Running Y/N."],
                 ["Feed Micro", "pid + Collected + Specimen", j(TABS["Feed Micro"][0]), "One row per specimen or pending item. Status: Final | Final dd/mm/yy | Preliminary | Pending. Late = Y: final after discharge."],
-                ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives."],
+                ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives. Summary = one display line in the card style (organism with S and R, or the negative result); Organisms, S, R = the same parts split out; Notes = the raw bench text, never to be parsed."],
+                ["Feed Daily Report", "pid + Date + Bench no.", j(TABS["Feed Daily Report"][0]), "Bench Daily Report preliminary lines (e.g. 'Blood' / 'GNB') for patients on the ID list, shown only while no Feed Cultures row carries that bench number; the row is cleared once the culture is updated."],
                 ["Feed Changes", "(log, append only)", j(CHANGES), "Every cell the run changed: Old and New values. (new row) and (removed) for whole rows."],
                 ["(any tab)", "a pid absent from Feed Patients", "", "The admission has left the feed: its block is FINAL and no culture is awaited."]]
     return [SCHEMA_HDR,
@@ -754,6 +812,32 @@ def meta_op(date):
                                                  ["last_run", dmy(date)], ["tabs", META_NOTE]]}
 
 
+def cmd_svccheck(a):
+    """Incomplete app import (spec 5.9.4): roster names absent from both patients[] and removed[] of the service list."""
+    sv = jload(a.service_list) or {}
+    names = [p.get("name", "") for p in sv.get("patients", [])] + [p.get("name", "") for p in sv.get("removed", [])]
+    missing, total = [], 0
+    for ln in open(a.roster, encoding="utf-8"):
+        t = re.sub(r"\*", "", ln).strip()
+        if not t:
+            continue
+        t = re.sub(r"\((new|UC[^)]*)\)", "", t)
+        parts = t.split()
+        if len(parts) < 3:
+            continue
+        total += 1
+        nm = " ".join(parts[1:-1])
+        if not any(I.name_match(nm, n) for n in names if n):
+            missing.append("%s %s" % (parts[0], nm))
+    print("SVCCHECK: %d on the last ID list, %d in the service list, %d removed, %d missing without a removal record"
+          % (total, len(sv.get("patients", [])), len(sv.get("removed", [])), len(missing)))
+    for m in missing:
+        print("MISSING " + m)
+    if total and len(missing) * 3 > total:
+        print("SVCCHECK WARN: more than a third of the list missing: incomplete app import")
+    return 0
+
+
 def cmd_schema(a):
     for which, name in (("feed", "IDP Feed"), ("register", "IDP Discharge Register")):
         rows = [[cell(v) for v in r] for r in schema_rows(which)]
@@ -771,6 +855,7 @@ def main():
     p = sp.add_parser("checkreg"); [p.add_argument(x) for x in ("register", "desired", "verification", "cultures", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--index")
     p = sp.add_parser("backfill"); p.add_argument("state"); p.add_argument("index"); p.add_argument("tables"); p.add_argument("--date", required=True); p.add_argument("--queue", action="store_true")
     p = sp.add_parser("schema"); p.add_argument("--date", required=True)
+    p = sp.add_parser("svccheck"); p.add_argument("service_list"); p.add_argument("roster")
     p = sp.add_parser("vqueue"); p.add_argument("verification"); p.add_argument("--date", required=True)
     p = sp.add_parser("vwrite"); p.add_argument("verification"); p.add_argument("replies"); p.add_argument("outdir")
     p = sp.add_parser("regjoin2"); p.add_argument("out"); p.add_argument("files", nargs="+")
@@ -779,7 +864,7 @@ def main():
         print(__doc__); return 0
     return {"feed": cmd_feed, "op": cmd_op, "feedcheck": cmd_feedcheck, "final": cmd_final, "checkreg": cmd_checkreg,
             "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2, "backfill": cmd_backfill,
-            "schema": cmd_schema}[a.cmd](a)
+            "schema": cmd_schema, "svccheck": cmd_svccheck}[a.cmd](a)
 
 
 if __name__ == "__main__":

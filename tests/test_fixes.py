@@ -211,12 +211,22 @@ ok("idp11_apostrophe", X.cell("123456") == "'123456" and X.cell("05/10") == "'05
    and X.cell("Mero IV q8h") == "Mero IV q8h" and X.bare("'05/10") == "05/10")
 ok("idp11_dates_ddmmyy", X.dmy("2026-10-29") == "29/10/26")
 hdr = X.TABS["Feed Patients"][0]
-ok("idp11_feed_header_v3", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "3"
-   and X.TABS["Feed Cultures"][0][:6] == ["pid", "Collected", "Specimen", "SID", "Result", "Status"])
+ok("idp11_feed_header_v4", hdr[-2:] == ["AMS block", "Updated"] and X.SCHEMA_VERSION == "4"
+   and X.TABS["Feed Cultures"][0][:9] == ["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Status"]
+   and X.TABS["Feed Daily Report"][0][:5] == ["pid", "Date", "Bench no.", "Specimen", "Preliminary result"])
 # Feed Cultures labels: finalised vs latest-not-finalised, never dropped (Chris 03.11.2026)
 lr_f = X.lab_row("Q9001", {"collected": "2026-10-30", "specimen": "Urine", "final": True, "final_date": "2026-11-01", "result": "no growth"})
 lr_o = X.lab_row("Q9001", {"collected": "2026-10-31", "specimen": "Urine", "final": False, "updated": "2026-11-02", "result": "50,000 col/ml"})
-ok("idp11_feed_cultures_labels", lr_f[5] == "Final 01/11/26" and lr_o[5] == "Not final, latest 02/11/26", "%r %r" % (lr_f, lr_o))
+ok("idp11_feed_cultures_labels", lr_f[8] == "Final 01/11/26" and lr_o[8] == "Not final, latest 02/11/26", "%r %r" % (lr_f, lr_o))
+# schema 4: the Summary never splits C. diff and keeps it next to an organism (Chris 19.11.2026)
+lr_c = X.lab_row("Q9001", {"collected": "2026-11-16", "specimen": "Stool", "final": True, "organisms": ["Candida albicans"],
+                           "result": "numerous yeast. SS lac+. C. difficile Ag and toxins negative. Final 18/11."})
+ok("idp11_feed_cultures_summary", lr_c[4] == "Candida albicans; C. difficile Ag and toxins negative" and lr_c[5] == "Candida albicans", repr(lr_c))
+_cx = {"specimens": [{"dr": "8001/8002"}], "daily_report": [
+    {"bench": "8001", "patient": "Alpha Beta Example", "result": "Blood: GNB", "file": "Cultures 2026-11-19"},
+    {"bench": "8003", "patient": "Alpha Example", "result": "Sputum: yeast", "file": "Cultures 2026-11-19"}]}
+_dr = X.daily_rows("Q9001", {"name": "Alpha Example"}, _cx, "2026-11-17")
+ok("idp11_daily_report_unsuperseded", len(_dr) == 1 and _dr[0][2] == "8003" and _dr[0][3] == "Sputum", repr(_dr))
 # Drive returns digests Markdown-escaped; the reader must still see every specimen (03.11.2026)
 import importlib.util as _ilu
 _s = _ilu.spec_from_file_location("cultures_t", os.path.join(I, "cultures.py")); CX = _ilu.module_from_spec(_s); _s.loader.exec_module(CX)
