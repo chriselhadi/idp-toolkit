@@ -44,12 +44,16 @@ TABS = {
     "Feed Micro": (["pid", "Collected", "Specimen", "Result", "Status", "Late", "Updated"], 3, "micro"),
     # Chris 03.11.2026: every lab specimen of the stay straight from Daily Cultures, finalised AND latest-not-finalised,
     # never dropped; the Status label tells them apart ("Final dd/mm/yy" | "Not final, latest dd/mm/yy")
-    "Feed Cultures": (["pid", "Collected", "Specimen", "SID", "Result", "Status", "Source", "Updated"], 4, "labcx"),
+    # schema 4 (Chris 19.11.2026): structured columns so the app never splits free text; the raw bench text moves to Notes
+    "Feed Cultures": (["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Pattern", "Status", "Source", "Notes",
+                       "Updated"], 4, "labcx"),
+    # schema 4: Daily Report findings (bench preliminary line) while no culture row with that bench number exists yet
+    "Feed Daily Report": (["pid", "Date", "Bench no.", "Specimen", "Preliminary result", "Updated"], 3, "dailyreport"),
 }
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-SCHEMA_VERSION = "3"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+SCHEMA_VERSION = "4"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
@@ -127,7 +131,8 @@ def stay_specimens(cx, mrn, name, aliases, first, last):
 
 
 def spec_row(pid, s, discharged):
-    org = "; ".join(o if isinstance(o, str) else o.get("name", "") for o in s.get("organisms") or [])
+    orgs = split_orgs(s)
+    org = "; ".join(orgs)
     ast = " ".join(x for x in ("S: " + s["ast_s"] if s.get("ast_s") else "", "I: " + s["ast_i"] if s.get("ast_i") else "",
                                "R: " + s["ast_r"] if s.get("ast_r") else "") if x)
     res = " | ".join(x for x in (org, ast, s.get("result", "")) if x)
@@ -136,20 +141,257 @@ def spec_row(pid, s, discharged):
     return [pid, ddmm(s.get("collected")), s.get("specimen", ""), res, status, late]
 
 
+_NEG = re.compile(r"\b(no growth( so far)?|no organisms?( detected)?|negative|neg|all negative|no salmonella or shigella|no s\. aureus)\b", re.I)
+_CDIFF = re.compile(r"C\.? ?diff\w*[^.;|]*", re.I)
+
+
+def lab_summary(s, org):
+    """One line in the card style: what grew (or the negative result) and the deciding AST, no bench shorthand."""
+    txt = s.get("result", "") or ""
+    cd = [m.group(0).strip() for m in _CDIFF.finditer(txt)]
+    if org:
+        out = org
+        if s.get("ast_s"):
+            out += " S " + s["ast_s"]
+        if s.get("ast_r"):
+            out += ", R " + s["ast_r"]
+        return "; ".join([out] + [c for c in dict.fromkeys(cd) if c.lower() not in out.lower()])
+    bits = list(cd)
+    m = re.search(r"no growth( so far)?", txt, re.I) or _NEG.search(txt)
+    if m and not bits:
+        bits.append(m.group(0).lower())
+    if not bits:
+        bits.append(re.split(r"(?<=[a-z])\. ", txt)[0].strip()[:100])
+    return "; ".join(dict.fromkeys(b for b in bits if b))
+
+# Resistance pattern, by fixed rules from the lab's own S and R (Chris 20.11.2026). Never a guess: when the AST
+# cannot be tied to one organism, or a drug is both S and R, the pattern says so instead.
+_CARBA = {"erta", "mero", "imi"}
+_CARBA_NF = {"mero", "imi"}
+_3GC = {"ceftri", "ceftaz", "cefota"}
+_FQ = {"cipro", "levo"}
+_DTR = {"piptaz", "ceftaz", "cefep", "aztr", "mero", "imi", "cipro", "levo"}
+_ECHINO = {"caspo", "mica", "anidula", "ecalta"}
+_ENTERO = re.compile(r"\b(e\. ?coli|escherichia|klebsiella|k\. ?pneumo|enterobacter|citrobacter|serratia|proteus|morganella|m\. ?morganii|providencia|"
+                     r"salmonella|shigella|hafnia|raoultella|pantoea|cronobacter|klebsiella|e\. ?cloacae)", re.I)
+
+
+def _drugs(txt):
+    out = set()
+    for d in (txt or "").split(","):
+        d = re.sub(r"\(.*?\)|\?", "", d).strip().lower()
+        if d:
+            out.add(d)
+    return out
+
+
+def _norm_org(o):
+    return re.sub(r"\(.*?\)|\?", " ", o).replace(".", " ").lower().split()
+
+
+def _org_in(org, text):
+    """True when text names this organism (genus initial + species, or a single-word name)."""
+    w, txt = _norm_org(org), " " + re.sub(r"[.,()?]", " ", text.lower()) + " "
+    if not w:
+        return False
+    if len(w) == 1:
+        return " %s " % w[0] in txt
+    return (" %s " % w[1] in txt) and bool(re.search(r"\b%s" % re.escape(w[0][0]), txt))
+
+
+def _ast_by_org(orgs, field):
+    """{organism: drug set} when the AST field can be tied to each organism, else None."""
+    if not field:
+        return {o: set() for o in orgs}
+    parts = [x.strip() for x in field.split(" | ")]
+    if all(re.match(r"[^:]{2,60}: ", x) for x in parts):
+        got = {}
+        for x in parts:
+            name, drugs = x.split(": ", 1)
+            hits = [o for o in orgs if o not in got and _org_in(o, name)]
+            if len(hits) != 1:
+                return None
+            got[hits[0]] = _drugs(drugs)
+        return got
+    return {orgs[0]: _drugs(field)} if len(orgs) == 1 else None
+
+
+_BLOCK = re.compile(r"\bS: (.*?)(?:,\s*I: (.*?))?(?:,\s*R: (.*?))?(?:\.(?:\s|$)|$)")
+
+
+def _ast_from_notes(orgs, txt):
+    """Per-organism S and R from the bench blocks ('<organism>: S: ..., R: ...' between ' | ')."""
+    got = {}
+    for blk in (txt or "").split(" | ")[1:]:
+        m = _BLOCK.search(blk) or re.search(r"\bR: ()()(.*?)(?:\.(?:\s|$)|$)", blk)
+        if not m:
+            continue
+        hits = [o for o in orgs if _org_in(o, blk[:m.start()])]
+        if len(hits) != 1 or hits[0] in got:
+            continue
+        got[hits[0]] = (_drugs(m.group(1)), _drugs(m.group(3)))
+    return got
+
+
+def _name_tags(org):
+    tags = []
+    for m in re.finditer(r"\b(ndm|kpc|oxa-?48|vim)\b", org, re.I):
+        tags.append(m.group(1).upper().replace("OXA48", "OXA-48"))
+    if re.search(r"\bampc\b", org, re.I):
+        tags.append("AmpC")
+    return tags
+
+
+_INTRINSIC = [(re.compile(r"serratia|proteus|morganella|providencia", re.I), {"col", "tige", "nitro", "amp", "amoxi-clav", "amp-sulb", "cefox", "cefu",
+                                                                                     "tetra"}),
+              (re.compile(r"klebsiella|k\. ?pneumo", re.I), {"amp"}),
+              (re.compile(r"enterobacter|citrobacter freundii|hafnia", re.I), {"amp", "amoxi-clav", "cefox", "cefu"}),
+              (re.compile(r"pseudomonas|p\. ?aeru", re.I), {"amp", "amoxi-clav", "amp-sulb", "ceftri", "cefota", "cefox", "cefu", "erta",
+                                                           "tige", "t/s", "tetra", "nal"}),
+              (re.compile(r"enterococ|e\. ?faec", re.I), {"clinda", "t/s", "gent", "cefox", "oxa"})]
+
+
+def org_pattern(org, s, r, final):
+    """One organism's pattern from its own S and R drug sets."""
+    o = org.lower()
+    named = _name_tags(org)
+    if s & r:
+        return "AST conflicting, check"
+    if not s and not r:
+        if "(mrsa)" in o or ("aureus" in o and "(mr)" in o):
+            return "MRSA"
+        if "(mssa)" in o:
+            return "MSSA"
+        if "(esbl" in o:
+            return ", ".join(["ESBL"] + named)
+        if named:
+            return ", ".join(named)
+        return "no AST" if final else "AST pending"
+    base = "ESBL" if "esbl" in o else ""
+    tags = []
+    if "candida" in o or "yeast" in o:
+        if "fluco" in r:
+            tags.append("fluconazole R")
+        if r & _ECHINO:
+            tags.append("echinocandin R")
+        if "ampho" in r:
+            tags.append("amphotericin R")
+    elif "aureus" in o or "staph" in o or "cons" in o:
+        mr = bool(r & {"oxa", "cefox"}) or "(mr" in o
+        if "aureus" in o:
+            tags.append("MRSA" if mr else "MSSA")
+        elif mr:
+            tags.append("methicillin R")
+        if "vanco" in r:
+            tags.append("vancomycin R")
+    elif "enterococ" in o or "e faec" in " ".join(_norm_org(org)):
+        if "vanco" in r:
+            tags.append("VRE")
+        if "amp" in r:
+            tags.append("ampicillin R")
+        if "gent-hl" in r:
+            tags.append("HLAR")
+    elif "pseudomonas" in o or "p. aeru" in o:
+        tested = (s | r) & _DTR
+        if len(tested) >= 6 and tested <= r:
+            tags.append("DTR")
+        elif r & _CARBA_NF:
+            tags.append("carbapenem R")
+        elif r & _FQ:
+            tags.append("FQ R")
+        if "cefta-avi" in r:
+            tags.append("ceftazidime-avibactam R")
+        if "ceftolo-taz" in r:
+            tags.append("ceftolozane-tazobactam R")
+    elif "acinetobacter" in o:
+        tags.append("carbapenem R" if r & _CARBA_NF else "carbapenem S")
+    elif "stenotrophomonas" in o:
+        tags.append("T/S R" if "t/s" in r else "T/S S")
+    elif _ENTERO.search(o):
+        if r & _CARBA:
+            tags.append("carbapenem R")
+        elif base:
+            tags.append(base)
+        elif r & _3GC:
+            tags.append("3rd-gen ceph R")
+        if r & _FQ:
+            tags.append("FQ R")
+        if r & {"gent", "amik", "tobra"}:
+            tags.append("aminoglycoside R")
+        if "t/s" in r:
+            tags.append("T/S R")
+    tags = [x for x in dict.fromkeys(tags + [n for n in named if n not in tags]) if x]
+    if not tags:
+        extra = set(r)
+        for rx, drugs in _INTRINSIC:
+            if rx.search(o):
+                extra -= drugs
+        return "pan-S" if not extra else "no key resistance"
+    return ", ".join(tags)
+
+
+def split_orgs(s):
+    """Organism names, one per entry ('A; B' strings split, 'colony type 1:' prefixes dropped)."""
+    out = []
+    for o in s.get("organisms") or []:
+        o = o if isinstance(o, str) else o.get("name", "")
+        for x in o.split("; "):
+            x = re.sub(r"^colony types? [\d\- ]+:\s*", "", x.strip(), flags=re.I)
+            if x:
+                out.append(x)
+    return out
+
+
+def lab_pattern(orgs, s):
+    """Pattern column: one entry per organism, in the Organisms order, joined by '; '."""
+    if not orgs:
+        return ""
+    final = bool(s.get("final"))
+    ss, rr = _ast_by_org(orgs, s.get("ast_s", "")), _ast_by_org(orgs, s.get("ast_r", ""))
+    if ss is not None and rr is not None:
+        return "; ".join(org_pattern(o, ss.get(o, set()), rr.get(o, set()), final) for o in orgs)
+    notes = _ast_from_notes(orgs, s.get("result", ""))
+    return "; ".join(org_pattern(o, *notes[o], final) if o in notes else "AST not split by organism" for o in orgs)
+
+
 def lab_row(pid, s):
-    """Feed Cultures row: one lab specimen, finalised or not, labelled so the two never mix."""
-    org = "; ".join(o if isinstance(o, str) else o.get("name", "") for o in s.get("organisms") or [])
-    ast = " ".join(x for x in ("S: " + s["ast_s"] if s.get("ast_s") else "", "I: " + s["ast_i"] if s.get("ast_i") else "",
-                               "R: " + s["ast_r"] if s.get("ast_r") else "") if x)
-    res = " | ".join(x for x in (org, ast, s.get("result", "")) if x)
+    """Feed Cultures row: one lab specimen, finalised or not, labelled so the two never mix (schema 4 columns)."""
+    orgs = split_orgs(s)
+    org = "; ".join(orgs)
+    summ = lab_summary(s, org)
     if s.get("verify"):
-        res += " (to verify)"
+        summ += " (to verify)"
     if s.get("final"):
         status = "Final " + ddmm(s["final_date"]) if s.get("final_date") else "Final"
     else:
         latest = s.get("updated") or s.get("unchanged_since") or s.get("file_date") or ""
         status = "Not final, latest " + ddmm(latest) if latest else "Not final"
-    return [pid, ddmm(s.get("collected")), s.get("specimen", ""), s.get("sid") or "", res, status, s.get("source", "")]
+    return [pid, ddmm(s.get("collected")), s.get("specimen", ""), s.get("sid") or "", summ, org, s.get("ast_s", ""),
+            s.get("ast_r", ""), lab_pattern(orgs, s), status, s.get("source", ""), s.get("result", "")]
+
+
+def daily_rows(pid, rec, cx, first):
+    """Daily Report lines for this patient whose bench number has no culture row yet (Chris 19.11.2026)."""
+    have = set()
+    for s in cx.get("specimens", []):
+        for b in re.split(r"[/,; ]+", str(s.get("dr") or "")):
+            if b.strip():
+                have.add(b.strip())
+    names = [rec.get("name") or ""] + list(rec.get("aliases") or [])
+    lo = (dt.date.fromisoformat(first) - dt.timedelta(days=5)).isoformat() if first else ""
+    out = []
+    for r in cx.get("daily_report", []):
+        if not any(I.name_match(r.get("patient", ""), n) for n in names if n):
+            continue
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", r.get("file", ""))
+        day = m.group(1) if m else ""
+        if lo and day and day < lo:
+            continue
+        if str(r.get("bench", "")).strip() in have:
+            continue
+        spec, _, res = (r.get("result", "") or "").partition(":")
+        out.append([pid, ddmm(day), str(r.get("bench", "")), spec.strip(), res.strip()])
+    return out
 
 
 def build(state, census, ams, cx, today, infeed=(), backlog=10):
@@ -253,6 +495,12 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
             for s in stay_specimens(cx, rec.get("mrn"), rec.get("name"), rec.get("aliases"), first,
                                     None if status == "Active" else rec.get("last_seen")):
                 rows["Feed Cultures"].append(lab_row(pid, s))
+    # Feed Daily Report: bench preliminary lines not yet superseded by a culture row (active patients)
+    for pid, rec, status in pts:
+        if cx and status == "Active":
+            adm = (cen.get(pid) or {}).get("as_admission")
+            first = min(x for x in (adm, rec.get("first_seen")) if x) if (adm or rec.get("first_seen")) else None
+            rows["Feed Daily Report"].extend(daily_rows(pid, rec, cx, first))
     for pid, w in (state.get("watch") or {}).items():
         for s in stay_specimens(cx, w.get("mrn"), w.get("name"), w.get("aliases"), None, None):
             if (s.get("collected") or "") >= (dt.date.fromisoformat(w["discharged"]) - dt.timedelta(days=30)).isoformat():
@@ -730,7 +978,8 @@ def schema_rows(which):
                 ["Feed Patients", "Status = Watch dd/mm/yy", "", "Block FINAL in Index; late cultures of the stay still arriving (Feed Micro, Late = Y)."],
                 ["Feed Antimicrobials", "pid + Drug", j(TABS["Feed Antimicrobials"][0]), "One row per course; a second course of the same drug is 'Drug #2'. Start/End dd/mm, ~ approximate, ? not documented. Running Y/N."],
                 ["Feed Micro", "pid + Collected + Specimen", j(TABS["Feed Micro"][0]), "One row per specimen or pending item. Status: Final | Final dd/mm/yy | Preliminary | Pending. Late = Y: final after discharge."],
-                ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives."],
+                ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives. Summary = one display line in the card style (organism with S and R, or the negative result); Organisms, S, R = the same parts split out; Pattern = the resistance pattern per organism, same order as Organisms, joined by '; ' (e.g. MRSA, MSSA, methicillin R, VRE, HLAR, ESBL or AmpC or NDM only when the lab wrote it, 3rd-gen ceph R, carbapenem R, DTR, FQ R, aminoglycoside R, T/S R, fluconazole R, echinocandin R, pan-S, no key resistance, AST pending, no AST, AST conflicting, check, AST not split by organism); show it as given, never infer; Notes = the raw bench text, never to be parsed."],
+                ["Feed Daily Report", "pid + Date + Bench no.", j(TABS["Feed Daily Report"][0]), "Bench Daily Report preliminary lines (e.g. 'Blood' / 'GNB') for patients on the ID list, shown only while no Feed Cultures row carries that bench number; the row is cleared once the culture is updated."],
                 ["Feed Changes", "(log, append only)", j(CHANGES), "Every cell the run changed: Old and New values. (new row) and (removed) for whole rows."],
                 ["(any tab)", "a pid absent from Feed Patients", "", "The admission has left the feed: its block is FINAL and no culture is awaited."]]
     return [SCHEMA_HDR,
@@ -754,6 +1003,32 @@ def meta_op(date):
                                                  ["last_run", dmy(date)], ["tabs", META_NOTE]]}
 
 
+def cmd_svccheck(a):
+    """Incomplete app import (spec 5.9.4): roster names absent from both patients[] and removed[] of the service list."""
+    sv = jload(a.service_list) or {}
+    names = [p.get("name", "") for p in sv.get("patients", [])] + [p.get("name", "") for p in sv.get("removed", [])]
+    missing, total = [], 0
+    for ln in open(a.roster, encoding="utf-8"):
+        t = re.sub(r"\*", "", ln).strip()
+        if not t:
+            continue
+        t = re.sub(r"\((new|UC[^)]*)\)", "", t)
+        parts = t.split()
+        if len(parts) < 3:
+            continue
+        total += 1
+        nm = " ".join(parts[1:-1])
+        if not any(I.name_match(nm, n) for n in names if n):
+            missing.append("%s %s" % (parts[0], nm))
+    print("SVCCHECK: %d on the last ID list, %d in the service list, %d removed, %d missing without a removal record"
+          % (total, len(sv.get("patients", [])), len(sv.get("removed", [])), len(missing)))
+    for m in missing:
+        print("MISSING " + m)
+    if total and len(missing) * 3 > total:
+        print("SVCCHECK WARN: more than a third of the list missing: incomplete app import")
+    return 0
+
+
 def cmd_schema(a):
     for which, name in (("feed", "IDP Feed"), ("register", "IDP Discharge Register")):
         rows = [[cell(v) for v in r] for r in schema_rows(which)]
@@ -771,6 +1046,7 @@ def main():
     p = sp.add_parser("checkreg"); [p.add_argument(x) for x in ("register", "desired", "verification", "cultures", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--index")
     p = sp.add_parser("backfill"); p.add_argument("state"); p.add_argument("index"); p.add_argument("tables"); p.add_argument("--date", required=True); p.add_argument("--queue", action="store_true")
     p = sp.add_parser("schema"); p.add_argument("--date", required=True)
+    p = sp.add_parser("svccheck"); p.add_argument("service_list"); p.add_argument("roster")
     p = sp.add_parser("vqueue"); p.add_argument("verification"); p.add_argument("--date", required=True)
     p = sp.add_parser("vwrite"); p.add_argument("verification"); p.add_argument("replies"); p.add_argument("outdir")
     p = sp.add_parser("regjoin2"); p.add_argument("out"); p.add_argument("files", nargs="+")
@@ -779,7 +1055,7 @@ def main():
         print(__doc__); return 0
     return {"feed": cmd_feed, "op": cmd_op, "feedcheck": cmd_feedcheck, "final": cmd_final, "checkreg": cmd_checkreg,
             "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2, "backfill": cmd_backfill,
-            "schema": cmd_schema}[a.cmd](a)
+            "schema": cmd_schema, "svccheck": cmd_svccheck}[a.cmd](a)
 
 
 if __name__ == "__main__":
