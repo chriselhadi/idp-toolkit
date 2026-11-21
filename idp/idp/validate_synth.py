@@ -181,6 +181,16 @@ def validate(mod, census, today):
             errors.append("%s: micro_recap must be one line <= 160 chars (%d)" % (pid, len(mr)))
         if mr:
             check_forbidden(mr, pid + " micro_recap", errors)
+        # BF 19.11.2026: steroids use the abx grammar; each device carries a date, 'chronic' or '?'
+        for k in ("steroids", "devices"):
+            if k in e and not (isinstance(e[k], list) and all(isinstance(x, str) for x in e[k])):
+                errors.append("%s: %s must be a list of strings" % (pid, k))
+        for x in e.get("steroids") or []:
+            if isinstance(x, str) and not ABX_RE.match(x):
+                errors.append("%s: steroid grammar '<Drug> [route] <freq> <seg> [(note)]', e.g. 'Methylpred IV OD 17/11- (COPD)': %s" % (pid, x))
+        for x in e.get("devices") or []:
+            if isinstance(x, str) and not re.search(r"\b\d\d/\d\d\b|\bchronic\b|\?", x):
+                errors.append("%s: device needs an insertion date dd/mm, 'chronic' or '?', e.g. 'CVC R IJ 18/11': %s" % (pid, x))
         for k in ("conflicts", "im_detail", "updates_nonid"):
             if k in e and not (isinstance(e[k], list) and all(isinstance(x, str) for x in e[k])):
                 errors.append("%s: %s must be a list of strings" % (pid, k))

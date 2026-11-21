@@ -91,6 +91,8 @@ def render_patient(c, e, today, with_update):
         L.append("Status: " + status)
     if rest:
         L.append("Imaging/key labs: " + "; ".join(rest))
+    L.append("Steroids: " + ("; ".join(e.get("steroids") or []) or "none documented"))  # BF 19.11.2026
+    L.append("Lines: " + ("; ".join(e.get("devices") or []) or "none documented"))
     if e["pendings"]:
         L.append("Pending: " + "; ".join(pend_line(p, today) for p in e["pendings"]))
     L.append(idp9.plan_line(e))  # OVERLAY_9 AD3
