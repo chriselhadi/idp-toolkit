@@ -11,6 +11,7 @@ Usage:
            [--queue in/reg_queue.json] [--glog in/reg_glog.json]
            [--digest in/digest.txt --cultures in/cultures.txt]   digest plain text: first line "Culture Digest dd/mm/yyyy"
            [--missing out/missing_cultures.txt] [--fixed out/fixed.txt]
+           [--reg-sheet in/reg_Register.json --feed-dir in/feed_now]   register (read this morning) vs the feed Gemini had (read before the run wrote it)
 
 Every input is optional: a missing one is reported as "not checked". Writes the text body to --out and a JSON
 summary next to it. Exit 0 always; prints RECON OK with counts.
@@ -64,7 +65,7 @@ def roster_names(text):
 def main():
     ap = argparse.ArgumentParser()
     for k in ("date", "out", "svc", "roster_yday", "recaps", "state", "census", "coverage", "vqueue", "queue", "glog",
-              "digest", "cultures", "missing", "fixed"):
+              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir"):
         ap.add_argument("--" + k.replace("_", "-"), dest=k, required=k in ("date", "out"))
     a = ap.parse_args()
     today = a.date
@@ -195,6 +196,60 @@ def main():
         if l.strip():
             fixed.append(l.strip().lstrip("- "))
 
+
+    # 7. Register blocks hold every course and culture the feed holds (catches rows written over, 27.11.2026)
+    rs = sheet_rows(load(a.reg_sheet))
+    fd = None
+    if a.feed_dir and os.path.isdir(a.feed_dir):
+        un = lambda rows: [[(c[1:] if isinstance(c, str) and c.startswith("'") else c) for c in r] for r in rows[1:]]
+        fd = {"Feed Patients": un(sheet_rows(load(os.path.join(a.feed_dir, "patients.json")))),
+              "Feed Antimicrobials": un(sheet_rows(load(os.path.join(a.feed_dir, "antimicrobials.json")))),
+              "Feed Cultures": un(sheet_rows(load(os.path.join(a.feed_dir, "labcx.json"))))}
+    if rs and fd and fd["Feed Patients"]:
+        ALIAS = {"piptazo": "pip", "zavi": "avibac|zavi", "bactrim": "trimeth|bactrim|tmp|smx", "tavanic": "levo|tavanic",
+                 "flagyl": "metro|flagyl", "augmentin": "clav|augment", "amphob": "ampho", "ecalta": "anidul|ecalta",
+                 "ceftriax": "ceftriax|rocephin", "cefe": "cefep", "zerb": "tolozan|zerb", "tige": "tige", "valganci": "valgan",
+                 "colistin": "colis", "hydrocort": "hydrocort"}
+        blocks, cur = {}, None
+        for r in rs[1:]:
+            k = (r[0] if r else "").strip()
+            if k:
+                m = re.search(r"\|\s*(P\d{4})\s*\|", k)
+                cur = m.group(1) if m else None
+                if cur:
+                    blocks.setdefault(cur, [])
+            if cur and len(r) > 2 and r[2].strip() == "---":
+                cur = None; continue
+            if cur:
+                blocks[cur].append(r)
+        active = {r[0] for r in fd.get("Feed Patients", []) if len(r) > 3 and r[3] == "Active"}
+        gaps = []
+        for r in fd.get("Feed Antimicrobials", []):
+            if len(r) < 2:
+                continue
+            pid, drug = r[0], (r[1] or "").split(" #")[0]
+            if pid not in active or pid not in blocks or not drug:
+                continue
+            txt = " ".join((x[22] if len(x) > 22 else "") + " " + (x[18] if len(x) > 18 else "") for x in blocks[pid]).lower()
+            pat = ALIAS.get(drug.lower(), re.escape(drug.lower()[:4]))
+            if not re.search(pat, txt):
+                gaps.append("%s %s" % (pid, drug))
+        for r in fd.get("Feed Cultures", []):
+            if len(r) < 3:
+                continue
+            pid, col = r[0], (r[1] or "")
+            if pid not in active or pid not in blocks or not col or not (len(r) > 9 and r[9].startswith("Final")):
+                continue
+            txt = " ".join(x[30] if len(x) > 30 else "" for x in blocks[pid])
+            if col[:5] not in txt:
+                gaps.append("%s culture %s %s" % (pid, col, r[2] if len(r) > 2 else ""))
+        if gaps:
+            need.append("Register blocks missing %d item(s) the feed holds (course or final culture written over or never added): %s"
+                        % (len(gaps), "; ".join(gaps[:20]) + (" ..." if len(gaps) > 20 else "")))
+        else:
+            ok.append("Register blocks of today's list hold every course and final culture in the feed")
+    else:
+        notchk.append("Register blocks vs feed")
     d = dt.date.fromisoformat(today).strftime("%d.%m.%Y")
     lines = ["ID Reconciliation %s" % d, "", "NEEDS YOU (%d)" % len(need)]
     lines += ["%d. %s" % (i + 1, x) for i, x in enumerate(need)] or ["none"]
