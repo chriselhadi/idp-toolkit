@@ -57,7 +57,7 @@ SCHEMA_VERSION = "4"        # bump whenever any header of IDP Feed or of the reg
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
-             "other AMS columns. Status: Active | Off service dd/mm/yy (gone one run) | Discharged dd/mm/yy (gone two runs: "
+             "other AMS columns. Status: Active | Off service dd/mm/yy (off the ID list, still seen by a source) | Discharged dd/mm/yy (no source shows the patient: "
              "finalise the block) | Watch dd/mm/yy (block final, late cultures still arriving). Late = Y: result final "
              "after discharge. A pid whose rows are cleared has left the feed.")
 COLS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -116,8 +116,13 @@ def dmy(iso):
 
 # ------------------------------------------------------------------ desired feed
 def departed_status(rec, today):
+    """Off service while any source still shows the patient in hospital; Discharged (dated the last day any source
+    showed them) only once the archive note went out AND no source shows them today (Chris, 27.11.2026)."""
     sent = rec.get("archive_note_sent") or ""
-    return ("Discharged " if sent and sent < today else "Off service ") + ddmm(rec.get("last_seen"))
+    seen = rec.get("in_hospital_seen") or ""
+    if sent and sent < today and seen < today:
+        return "Discharged " + ddmm(max(rec.get("last_seen") or "", seen))
+    return "Off service " + ddmm(rec.get("last_seen"))
 
 
 def on_service_once(rec):
@@ -973,8 +978,8 @@ def schema_rows(which):
                 ["Meta", "Key", "Key | Value", "schema_version, status (live), last_run (dd/mm/yy), tabs (note for Gemini)"],
                 ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission). Written by the morning run, changed rows only. AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
                 ["Feed Patients", "Status = Active", "", "On the ID list today. Gemini opens the register block on the first morning it appears."],
-                ["Feed Patients", "Status = Off service dd/mm/yy", "", "Gone from the ID list one run; dd/mm/yy = last day on the service."],
-                ["Feed Patients", "Status = Discharged dd/mm/yy", "", "Gone two runs, or a past admission fed back in by the backfill; Gemini finalises the block."],
+                ["Feed Patients", "Status = Off service dd/mm/yy", "", "Off the ID list but still seen on the AS list, a handoff or an update email; dd/mm/yy = last day on the service."],
+                ["Feed Patients", "Status = Discharged dd/mm/yy", "", "No source shows the patient any more (dd/mm/yy = last day seen), or a past admission fed back in by the backfill; Gemini finalises the block."],
                 ["Feed Patients", "Status = Watch dd/mm/yy", "", "Block FINAL in Index; late cultures of the stay still arriving (Feed Micro, Late = Y)."],
                 ["Feed Antimicrobials", "pid + Drug", j(TABS["Feed Antimicrobials"][0]), "One row per course; a second course of the same drug is 'Drug #2'. Start/End dd/mm, ~ approximate, ? not documented. Running Y/N."],
                 ["Feed Micro", "pid + Collected + Specimen", j(TABS["Feed Micro"][0]), "One row per specimen or pending item. Status: Final | Final dd/mm/yy | Preliminary | Pending. Late = Y: final after discharge."],
@@ -987,7 +992,7 @@ def schema_rows(which):
             ["Register", "Key", j(I.REG_HEADER), "Gemini's blocks, current admissions. Key + Status, then the 33 columns of LAU_AMS_Dec_2025_2026_cleaned_in_original_format in the same order. One block = rows sharing a Key; a row with --- ends a block."],
             ["Register", "Key format", "MRN <mrn> | <pid or AMS> | dd/mm/yy to dd/mm/yy", "pid Pnnnn for admissions the ID service followed (from IDP Feed); AMS for blocks taken from the hand-kept workbook. 'to' blank while the stay is open."],
             ["Register", "Status = Active (updated dd/mm/yy)", "", "Admission on the ID service; block opened on its first morning in IDP Feed and updated daily."],
-            ["Register", "Status = Off service dd/mm/yy", "", "Left the ID list one run ago."],
+            ["Register", "Status = Off service dd/mm/yy", "", "Left the ID list; still seen in hospital by a source."],
             ["Register", "Status = Discharged dd/mm/yy", "", "Stay ended; '(registered dd/mm/yy)' when the block was written after the discharge (backfill)."],
             ["Admissions", "Key", j(I.REG_HEADER), "Same layout as Register."],
             ["History", "Key", j(I.REG_HEADER), "Same layout; historical blocks from the AMS workbook (frozen .xlsx), read only."],
