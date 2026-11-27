@@ -39,7 +39,8 @@ AMS33 = I.REG_HEADER[2:]
 TABS = {
     "Feed Patients": (["pid", "MRN", "Name", "Status", "Room", "Fellow", "UC", "First seen", "Last seen", "Age",
                        "Date of Admission", "CrCl", "Weight", "One-liner", "ID issues", "ID plan", "Status line", "Imaging",
-                       "Micro recap", "Pendings", "Conflicts", "AMS block", "Updated"], 1, "patients"),
+                       "Micro recap", "Pendings", "Conflicts", "AMS block", "IM", "Steroids", "Lines", "Not applied",
+                       "Updates today", "Updated"], 1, "patients"),
     "Feed Antimicrobials": (["pid", "Drug", "Line", "Issue", "Start", "End", "Running", "Updated"], 2, "antimicrobials"),
     "Feed Micro": (["pid", "Collected", "Specimen", "Result", "Status", "Late", "Updated"], 3, "micro"),
     # Chris 03.11.2026: every lab specimen of the stay straight from Daily Cultures, finalised AND latest-not-finalised,
@@ -53,7 +54,7 @@ TABS = {
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-SCHEMA_VERSION = "4"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+SCHEMA_VERSION = "5"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
@@ -453,7 +454,10 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
             "Y" if "uc" in (c.get("tags") or sy.get("_tags") or []) else "", ddmm(rec.get("first_seen")), ddmm(rec.get("last_seen")),
             a(6), (ddmm(c["as_admission"]) if c.get("as_admission") else (a(11) or I_current_doa(sy.get("one_liner"), rec.get("first_seen")) or "")), a(10), a(8), sy.get("one_liner", ""), " ; ".join(i.get("dx", "") for i in issues),
             " ; ".join(sy.get("id_plan") or []), vit[0] if vit else "", " ; ".join(vit[1:]), sy.get("micro_recap", ""),
-            " ; ".join(sy.get("pendings") or []), " ; ".join(sy.get("conflicts") or []), amsloc])
+            " ; ".join(sy.get("pendings") or []), " ; ".join(sy.get("conflicts") or []), amsloc,
+            " ; ".join(sy.get("im_detail") or []), " ; ".join(sy.get("steroids") or []), " ; ".join(sy.get("devices") or []),
+            " ; ".join("%s: %s" % kv for kv in (sy.get("not_applied") or {}).items()),
+            " ; ".join(sy.get("updates") or []) if status == "Active" else ""])
         abx = [(i.get("dx", "").split(" | ")[0], l) for i in issues for l in i.get("abx", [])] + [("no linked issue", l) for l in sy.get("abx_other") or []]
         if not abx:
             abx = [(h.get("issue", ""), h.get("line", h.get("drug", ""))) for h in rec.get("abx_history", [])]
@@ -478,10 +482,10 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
         rows["Feed Patients"].append([pid, e.get("mrn", ""), e.get("name", ""), "Discharged " + ddmm(e.get("last")), e.get("room", ""),
                                       e.get("fellow", ""), "", ddmm(e.get("first")), ddmm(e.get("last"))] + [""] * 4 +
                                      [e.get("one_liner", "")] + [""] * 7 +
-                                     [("%s!%s" % (e["ams_sheet"], e["ams_first_row"])) if e.get("ams_sheet") and e.get("ams_first_row") else ""])
+                                     [("%s!%s" % (e["ams_sheet"], e["ams_first_row"])) if e.get("ams_sheet") and e.get("ams_first_row") else ""] + [""] * 5)
     for pid, w in (state.get("watch") or {}).items():
         rows["Feed Patients"].append([pid, w.get("mrn", ""), w.get("name", ""), "Watch " + ddmm(w.get("discharged")), "", "", "",
-                                      "", ddmm(w.get("discharged"))] + [""] * 13)
+                                      "", ddmm(w.get("discharged"))] + [""] * 18)
         for s in stay_specimens(cx, w.get("mrn"), w.get("name"), w.get("aliases"), None, w.get("discharged")):
             if (s.get("collected") or "") >= (dt.date.fromisoformat(w["discharged"]) - dt.timedelta(days=30)).isoformat() \
                     and (s.get("final_date") or "9999") > (w.get("discharged") or ""):
@@ -976,7 +980,7 @@ def schema_rows(which):
         return [SCHEMA_HDR,
                 ["Schema", "Tab", j(SCHEMA_HDR), "This contract. schema_version " + SCHEMA_VERSION + "; any header change bumps it. " + RULES],
                 ["Meta", "Key", "Key | Value", "schema_version, status (live), last_run (dd/mm/yy), tabs (note for Gemini)"],
-                ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission). Written by the morning run, changed rows only. AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
+                ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission); the official copy of the day's round for every reader (AMS app, Gemini, audit). Written by the morning run, changed rows only. IM, Steroids, Lines, Not applied and Updates today are the recap card lines. AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
                 ["Feed Patients", "Status = Active", "", "On the ID list today. Gemini opens the register block on the first morning it appears."],
                 ["Feed Patients", "Status = Off service dd/mm/yy", "", "Off the ID list but still seen on the AS list, a handoff or an update email; dd/mm/yy = last day on the service."],
                 ["Feed Patients", "Status = Discharged dd/mm/yy", "", "No source shows the patient any more (dd/mm/yy = last day seen), or a past admission fed back in by the backfill; Gemini finalises the block."],
