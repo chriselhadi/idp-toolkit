@@ -525,6 +525,29 @@ def main():
     jdump(out_census, os.path.join(a.out, "census.json"))
     jdump(delta, os.path.join(a.out, "delta.json"))
     jdump({r["pid"]: r["ward_rows"] for r in ordered}, os.path.join(a.out, "ward_rows.json"))
+    # 27.11.2026 (Chris): a record that left the ID list becomes Discharged only when every source drops the patient.
+    # Seen today on the AS list (any order, MRN), in a fresh handoff row (name, age-checked) or in an update email
+    # (MRN or surname) = still in hospital: in_hospital_seen = today keeps the feed status at Off service.
+    as_mrns = {str(q.get("mrn")) for q in ((as_today or {}).get("patients") or []) if q.get("mrn")}
+    fresh_rows = [w for w in (wards or []) if row_is_fresh(w, today)]
+    mail = ""
+    for f in (a.update_text or []):
+        if not f.endswith(".json"):
+            try:
+                mail += "\n" + open(f, encoding="utf-8", errors="ignore").read().lower()
+            except OSError:
+                pass
+    def _in_mail(rec):
+        if rec.get("mrn") and re.search(r"(?<!\d)%s(?!\d)" % re.escape(str(rec["mrn"])), mail):
+            return True
+        toks = [t for t in re.sub(r"[^a-z ]+", " ", (rec.get("name") or "").lower()).split() if len(t) >= 4]
+        return bool(toks) and re.search(r"\b%s\b" % re.escape(toks[-1]), mail) is not None
+    for pid, rec in reg.p.items():
+        if pid in census or rec.get("active") or not (rec.get("archived") or rec.get("archive_note_sent")):
+            continue
+        if (rec.get("mrn") and str(rec["mrn"]) in as_mrns) or _in_mail(rec) \
+                or ward_lookup(fresh_rows, rec.get("name") or "", age=patient_age(rec)):
+            rec["in_hospital_seen"] = today
     state["next_pid"] = reg.next
     state["_census_pids"] = [r["pid"] for r in ordered]
     orphans = [r for r in ordered if r["orphan"]]
