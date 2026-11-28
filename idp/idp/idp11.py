@@ -9,6 +9,8 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
   feed      <state_new> <census> <ams_blocks|MISSING> <cultures|MISSING> <nowdir> <outdir> --date D
               nowdir holds patients.json antimicrobials.json micro.json changes.json (the Feed tabs as they are now;
               a missing file = empty tab). Writes outdir/feed_desired.json and outdir/ops.json; prints FEED OPS.
+              --strict (run.py post, round 2 T1): every tab file (the five Feed tabs, changes, evolution, review) must
+              exist with a header row, else FEED FAILED and no ops are written (a missing read is never an empty tab).
   op        <ops.json> <n>          print op n as {"range":..., "values":...} for update_values (n from 1)
   feedcheck <outdir>/feed_desired.json <nowdir> --date D    after the writes: FEED MATCH, then the Meta op
   final     <state_new> <index.json> <cultures|MISSING> --date D
@@ -17,6 +19,12 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
               Claude's check of Gemini's Discharged blocks: C- rows (findings, or one "verified" row) -> outdir/vrows_ops.json
   vqueue    <verification.json> --date D     Gemini's open findings on Claude's data, and what goes to Chris
   vwrite    <verification.json> <replies.json> <outdir>    replies -> outdir/vreply_ops.json
+  vrequests <verification.json> <verification_requests.json> <outdir> --date D [--after <outdir>/vrows_ops.json]
+              round 2 T6: the synthesis's own requests (merge requests, register corrections), a list of {key, column,
+              value_checked, value_in_source, source, severity, note[, tab]} -> C- rows (Found by Claude, Tab default
+              "Register", State open; the note follows the source) appended after the rows the tab holds and after
+              checkreg's rows (--after), ids continuing theirs -> outdir/vreq_ops.json. A request already open or
+              disputed (same Key, Column and Value in source) is not written twice. Prints VREQUESTS OK.
   regjoin2  <out.json> <raw tab json>...     Register + History + Admissions -> one register.json for idp10 base/readmit
   backfill  <state_new> <index.json> <identifiers dir> --date D [--queue]
               admissions in the state or in the IDP_Data identifiers tables with no register block: count and date
@@ -566,7 +574,25 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
     return out
 
 
+def strict_reads(nowdir):
+    """[(file, why)] for every tab read cmd_feed uses that is missing or has no header row."""
+    bad = []
+    for f in [x[2] for x in TABS.values()] + ["changes", "evolution", "review"]:
+        p = os.path.join(nowdir, f + ".json")
+        if not os.path.exists(p):
+            bad.append((f + ".json", "missing")); continue
+        v = raw_values(p)
+        if not v or not any(c.strip() for c in v[0]):
+            bad.append((f + ".json", "empty (no header row)"))
+    return bad
+
+
 def cmd_feed(a):
+    if getattr(a, "strict", False):
+        bad = strict_reads(a.nowdir)
+        if bad:
+            print("FEED FAILED: tab read(s) %s; no ops written" % "; ".join("%s %s" % x for x in bad))
+            return 1
     state, census = jload(a.state), jload(a.census) or {"patients": []}
     ams, cx = jload(a.ams_blocks), jload(a.cultures) or {"specimens": []}
     pnow0 = raw_values(os.path.join(a.nowdir, "patients.json"))
@@ -1047,6 +1073,54 @@ def cmd_vwrite(a):
     return 0
 
 
+VREQ_FIELDS = ("key", "column", "value_checked", "value_in_source", "source", "severity", "note")
+
+
+def cmd_vrequests(a):
+    ver = raw_values(a.verification)
+    if not ver:
+        print("VREQUESTS FAILED: the Verification read %s is missing or empty" % a.verification); return 1
+    try:
+        req = json.load(open(a.requests, encoding="utf-8"))
+    except Exception as e:
+        print("VREQUESTS FAILED: %s does not parse: %s" % (a.requests, e)); return 1
+    if not isinstance(req, list):
+        print("VREQUESTS FAILED: %s is not a list" % a.requests); return 1
+    for i, r in enumerate(req, 1):
+        miss = [k for k in ("key", "column", "value_in_source", "source", "severity") if not str((r or {}).get(k) or "").strip()] \
+            if isinstance(r, dict) else ["(not an object)"]
+        if miss:
+            print("VREQUESTS FAILED: request %d lacks %s (fields: %s)" % (i, ", ".join(miss), ", ".join(VREQ_FIELDS))); return 1
+    after = []                          # checkreg's rows of today, written before these
+    if a.after and os.path.exists(a.after):
+        for op in json.load(open(a.after)):
+            if op.get("range", "").startswith("Verification!A1:"):
+                continue
+            after += [[bare("" if c is None else str(c)) for c in r] for r in op.get("values") or []]
+    have = ver + after
+    openrows = {(r[4], r[5], r[7]) for r in (x + [""] * 14 for x in have[1:]) if r[2] == "Claude" and r[13] in ("open", "disputed")}
+    ids = next_ids(have, "C", a.date); today = dmy(a.date); rows, dup = [], 0
+    for r in req:
+        k = (str(r["key"]).strip(), str(r["column"]).strip(), bare(cell(r["value_in_source"])))
+        if k in openrows:
+            dup += 1; continue
+        openrows.add(k)
+        src = str(r["source"]).strip() + ("; note: " + str(r["note"]).strip() if str(r.get("note") or "").strip() else "")
+        rows.append([next(ids), today, "Claude", str(r.get("tab") or "Register").strip(), r["key"], r["column"],
+                     r.get("value_checked") or "", r["value_in_source"], src, r["severity"], "", "", "", "open"])
+    rows = [[cell(v) for v in x] for x in rows]
+    start = len(have) + 1
+    ops = []
+    for i in range(0, len(rows), 40):
+        part = rows[i:i + 40]
+        ops.append({"range": "Verification!A%d:N%d" % (start + i, start + i + len(part) - 1), "values": part})
+    os.makedirs(a.outdir, exist_ok=True)
+    json.dump(ops, open(os.path.join(a.outdir, "vreq_ops.json"), "w"), ensure_ascii=True)
+    print("VREQUESTS OK: %d request(s) -> %d C- row(s)%s, %d update_values call(s) in vreq_ops.json" % (
+        len(req), len(rows), (" (%d already open, not repeated)" % dup) if dup else "", len(ops)))
+    return 0
+
+
 def cmd_regjoin2(a):
     vals = [I.REG_HEADER]
     for p in a.files:
@@ -1200,7 +1274,7 @@ def cmd_schema(a):
 
 def main():
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd")
-    p = sp.add_parser("feed"); [p.add_argument(x) for x in ("state", "census", "ams_blocks", "cultures", "nowdir", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10); p.add_argument("--evolution")
+    p = sp.add_parser("feed"); [p.add_argument(x) for x in ("state", "census", "ams_blocks", "cultures", "nowdir", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10); p.add_argument("--evolution"); p.add_argument("--strict", action="store_true")
     p = sp.add_parser("review"); p.add_argument("review"); p.add_argument("outdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("reviewreply"); p.add_argument("replies"); p.add_argument("review"); p.add_argument("outdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("op"); p.add_argument("ops"); p.add_argument("n", type=int)
@@ -1213,12 +1287,14 @@ def main():
     p = sp.add_parser("vqueue"); p.add_argument("verification"); p.add_argument("--date", required=True)
     p = sp.add_parser("vwrite"); p.add_argument("verification"); p.add_argument("replies"); p.add_argument("outdir")
     p = sp.add_parser("regjoin2"); p.add_argument("out"); p.add_argument("files", nargs="+")
+    p = sp.add_parser("vrequests"); p.add_argument("verification"); p.add_argument("requests"); p.add_argument("outdir"); p.add_argument("--date", required=True); p.add_argument("--after")
     a = ap.parse_args()
     if not a.cmd:
         print(__doc__); return 0
     return {"feed": cmd_feed, "op": cmd_op, "feedcheck": cmd_feedcheck, "final": cmd_final, "checkreg": cmd_checkreg,
             "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2, "backfill": cmd_backfill,
-            "schema": cmd_schema, "svccheck": cmd_svccheck, "review": cmd_review, "reviewreply": cmd_reviewreply}[a.cmd](a)
+            "schema": cmd_schema, "svccheck": cmd_svccheck, "review": cmd_review, "reviewreply": cmd_reviewreply,
+            "vrequests": cmd_vrequests}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -346,4 +346,7 @@ python3 "$T/tests/test_recon_reply.py" "$I" "$W/recon_reply" || fail recon_reply
 # ---------------- Stage commands, membership, AS deadline, learned rules, coverage gate (28.11.2026) ----------------
 python3 "$T/tests/test_stages.py" "$I" "$W/stages" "$D1" "$D2" || fail stages "tests/test_stages.py failed"
 
+# ---------------- Round 2 toolkit fixes T1-T10 (28.11.2026): feed read gate, prep re-run, chain, full base, sendcheck ----------------
+python3 "$T/tests/test_stages_r2.py" "$I" "$W/stages_r2" "$W/stages/stage" "$D1" "$D2" || fail stages_r2 "tests/test_stages_r2.py failed"
+
 echo "E2E OK: $W"

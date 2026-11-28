@@ -75,6 +75,12 @@ J(os.path.join(S, "in", "feed_now", "rules.json"), {"values": [
     ["3", "'01/09/26", "Rule three", "RULE", "active", ""],
     ["4", "'07/09/26", "Rule four, proposed today", "k00000004", "proposed", ""]]})
 J(os.path.join(S, "in", "feed_now", "answered.json"), {"values": [["Key", "Date answered", "Item", "Chris answer", "Applied as", "Until"]]})
+# round 2 T1: every feed tab read must be present with a header row (here: header-only tabs, a new feed)
+import idp11  # noqa: E402
+for hdr, _, f in idp11.TABS.values():
+    J(os.path.join(S, "in", "feed_now", f + ".json"), {"values": [hdr]})
+for f, hdr in (("changes", idp11.CHANGES), ("evolution", idp11.EVOLUTION), ("review", idp11.REVIEW)):
+    J(os.path.join(S, "in", "feed_now", f + ".json"), {"values": [hdr]})
 
 rc, o = run(RUN, "prep", "--date", "2026-09-07", "--work", S)
 ok("prep_stage_ok", rc == 0 and "STAGE OK: prep 2026-09-07" in o and "STAGE FAIL" not in o, o)
