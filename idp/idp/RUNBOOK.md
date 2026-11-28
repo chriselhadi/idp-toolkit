@@ -246,3 +246,16 @@ Each day starts from yesterday's synthesis and amends only what today's sources 
   (rejected, partly, or unanswered for more than one round) gets Escalated Y.
 - `recon.py --evolution out/evolution.json --review in/feed_now/review.json`: the Evolution counts go under CHECKED;
   every Escalated row and every rejected Gemini point goes under NEEDS YOU.
+
+## Chris answers the ID Reconciliation email (28.11.2026)
+- Every NEEDS YOU line ends with a stable key `[k<8 hex>]` (sha1 of scope | kind | text without dates and times);
+  out/recon.json "need" is a list of {n, key, text}. The body ends with the HOW TO ANSWER footer.
+- Chris replies to the email (to himself). Next morning, before recon: save the reply's plaintextBody to
+  in/recon_reply.txt and yesterday's recon.json to in/recon_yday.json, read the feed tabs 'Learned Rules' and
+  'Answered Items' (get_values) into in/rules_tab.json and in/answered_tab.json, then
+  `recon_reply.py in/recon_reply.txt in/recon_yday.json out --date D --rules-tab in/rules_tab.json --answered-tab in/answered_tab.json`
+  (REPLY OK: a answers, r rules, u undo, x unparsed). Apply every answer in out/chris_answers.json; append
+  out/answered_rows.json to 'Answered Items' (fill "Applied as"), out/rule_rows.json to 'Learned Rules', and run each
+  op of out/undo_ops.json (Status undone). Show every "unparsed" line to Chris in the recon.
+- Then `recon.py ... --resolved in/answered_tab.json --learned in/rules_tab.json` (re-read both tabs after the
+  appends): answered keys are skipped while Until is empty or not passed, and new active rules are listed as L<No>.

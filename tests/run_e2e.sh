@@ -340,4 +340,7 @@ python3 "$I/idp10.py" evolve synth.py "$D1/out/state_new.json" out_evolve --date
 grepcheck evolve_day2 "EVOLVE OK: 0 changes explained, 0 unexplained" evolve.txt
 python3 "$T/tests/test_evolve.py" "$I" "$W/evolve" "$D2" || fail evolve "tests/test_evolve.py failed"
 
+# ---------------- Chris answers the ID Reconciliation email (28.11.2026): item keys, --resolved, --learned, recon_reply ----------------
+python3 "$T/tests/test_recon_reply.py" "$I" "$W/recon_reply" || fail recon_reply "tests/test_recon_reply.py failed"
+
 echo "E2E OK: $W"
