@@ -225,3 +225,24 @@ Every admission the ID service follows has a block in the IDP Discharge Register
   header changes, and bump SCHEMA_VERSION in idp11.py with it. Never rename a header without the bump.
 - Cells that look like numbers, dates or formulas (MRNs, dd/mm) are written with a leading apostrophe; dates in
   Updated, Feed Changes, Verification and Meta are dd/mm/yy.
+
+## Notes evolve, never rewritten; Gemini Review (28.11.2026, Chris)
+
+Each day starts from yesterday's synthesis and amends only what today's sources change; every change is explained.
+- synth_delta.py may carry `CHANGES = {pid: [{"field", "kind": NEW|AMENDED|RETRACTED, "old", "new", "source"}]}`;
+  `idp10.py apply` (alias `assemble`) copies it into synth.py.
+- `idp10.py evolve synth.py in/state.json out --date D` compares every carried pid field by field (one_liner, issues
+  (dx), abx (issue and abx_other drug lines), id_plan, im_detail, steroids, devices, micro, micro_recap, pendings,
+  conflicts, not_applied, vitals; lists item by item) and writes out/evolution.txt and out/evolution.json. It exits 1
+  while any difference has no CHANGES entry with a source: add the entry or restore yesterday's text. A rewording of
+  yesterday's text is a difference.
+- `idp11.py feed` appends today's rows of out/evolution.json to the "Evolution" tab (nowdir/evolution.json = the tab
+  as it is now; a rerun writes no duplicates) and creates "Gemini Review" with its header only when that tab is absent
+  (nowdir/review.json empty). Schema version 6.
+- Gemini writes Date..Evidence of "Gemini Review"; the run answers the next morning: `idp11.py review
+  in/feed_now/review.json out --date D` lists open points in out/review_open.txt; write out/review_replies.json
+  ({row: {reply: accepted|rejected|partly, reason}}), then `idp11.py reviewreply out/review_replies.json
+  in/feed_now/review.json out/feed --date D` gives out/feed/review_ops.json (columns H..K only). An unresolved point
+  (rejected, partly, or unanswered for more than one round) gets Escalated Y.
+- `recon.py --evolution out/evolution.json --review in/feed_now/review.json`: the Evolution counts go under CHECKED;
+  every Escalated row and every rejected Gemini point goes under NEEDS YOU.

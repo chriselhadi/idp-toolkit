@@ -22,6 +22,14 @@ Commands (every input that is a sheet read is the raw get_values JSON saved from
               admissions in the state or in the IDP_Data identifiers tables with no register block: count and date
               range; with --queue they go into state["backfill"] and enter the feed as Discharged, at most --backlog a day
   schema    --date D                 the Schema and Meta ops for IDP Feed and the Schema op for the register
+  review    <review.json> <outdir> --date D     open Gemini Review rows (no Claude reply) -> outdir/review_open.txt
+  reviewreply <review_replies.json> <review.json> <outdir> --date D
+              {row_number: {reply, reason}} -> outdir/review_ops.json: update_values on H..K only (Claude reply, Claude
+              reason, Resolved, Escalated); Gemini's columns A..G are never written
+
+28.11.2026 (Chris): feed also appends today's rows of <outdir>/../evolution.json (or --evolution) to the "Evolution"
+tab (nowdir/evolution.json = the tab now) and creates "Gemini Review" with its header only when nowdir/review.json is
+absent or empty. Schema version 6.
 
 29.10.2026 (Chris): every admission must have a register block from its first day on the service. The feed gives
 Gemini each pid on its first morning (Status Active); checkreg checks coverage (every Feed pid has exactly one Index
@@ -54,13 +62,23 @@ TABS = {
 CHANGES = ["Date", "pid", "Tab", "Key", "Field", "Old", "New"]
 VER = ["Row ID", "Date found", "Found by", "Tab", "Key or pid", "Column", "Value checked", "Value in source", "Source",
        "Severity", "Reply by", "Reply", "Reply note", "State"]
-SCHEMA_VERSION = "5"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
+# schema 6 (Chris 28.11.2026): notes evolve, never rewritten. "Evolution" = every change to yesterday's synthesis with its
+# source (append only, from out/evolution.json); "Gemini Review" = Gemini's daily assessment (A..G, Gemini's) answered by the
+# run the next morning (H..K, the run's). The feed step only creates the Gemini Review header when the tab is absent.
+EVOLUTION = ["pid", "Date", "Field", "Kind", "Old", "New", "Source", "Updated"]
+REVIEW = ["Date", "pid", "Patient", "Field", "View", "Statement", "Evidence", "Claude reply", "Claude reason", "Resolved",
+          "Escalated"]
+REVIEW_GEMINI = 7          # columns A..G are Gemini's; the run writes only H..K
+REVIEW_VIEWS = ("agree", "disagree", "missing", "suggestion")
+REVIEW_REPLIES = ("accepted", "rejected", "partly")
+SCHEMA_VERSION = "6"        # bump whenever any header of IDP Feed or of the register changes; never rename a header without it
 META_NOTE = ("Open a register block for a pid on its FIRST morning in Feed Patients (Status Active), not at discharge. "
              "AMS block = sheet!first row of a hand-made block in the AMS workbook for the same admission: reconcile into "
              "that admission, never a second block. Age, admission date, CrCl and weight come from the live AMS workbook block; read that block there for the "
              "other AMS columns. Status: Active | Off service dd/mm/yy (off the ID list, still seen by a source) | Discharged dd/mm/yy (no source shows the patient: "
              "finalise the block) | Watch dd/mm/yy (block final, late cultures still arriving). Late = Y: result final "
-             "after discharge. A pid whose rows are cleared has left the feed.")
+             "after discharge. A pid whose rows are cleared has left the feed. Gemini Review: write your daily assessment in "
+             "Date..Evidence; the run answers in Claude reply..Escalated the next morning.")
 COLS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
@@ -588,11 +606,125 @@ def cmd_feed(a):
     for i in range(0, len(changes), 60):
         part = changes[i:i + 60]
         ops.append({"range": "'Feed Changes'!A%d:G%d" % (crow, crow + len(part) - 1), "values": part}); crow += len(part)
+    evo = getattr(a, "evolution", None) or os.path.join(os.path.dirname(os.path.abspath(a.outdir)), "evolution.json")
+    erows, eops = evolution_rows(jload(evo) if os.path.exists(evo) else None,
+                                 raw_values(os.path.join(a.nowdir, "evolution.json")), a.date)
+    ops += eops
+    rnow = raw_values(os.path.join(a.nowdir, "review.json"))
+    if not any(any(c for c in r) for r in rnow):           # Gemini's tab: header only when absent, never anything else
+        ops.append({"range": "'Gemini Review'!A1:%s1" % col(len(REVIEW)), "values": [REVIEW]})
     os.makedirs(a.outdir, exist_ok=True)
     json.dump(desired, open(os.path.join(a.outdir, "feed_desired.json"), "w"), ensure_ascii=True)
     json.dump(ops, open(os.path.join(a.outdir, "ops.json"), "w"), ensure_ascii=True)
-    print("FEED OPS: %d update_values call(s); changed rows: %s; %d change-log row(s); %d patients in the feed"
-          % (len(ops), ", ".join(summary), len(changes), len(desired["Feed Patients"])))
+    print("FEED OPS: %d update_values call(s); changed rows: %s; %d change-log row(s); %d evolution row(s); %d patients in the feed"
+          % (len(ops), ", ".join(summary), len(changes), len(erows), len(desired["Feed Patients"])))
+    return 0
+
+
+def evolution_rows(rep, now, date):
+    """Rows for the Evolution tab from evolution.json (today's changes only), appended after the rows already there;
+    a row already in the tab (same pid, Date, Field, Kind, Old, New) is not written twice (a rerun of the day)."""
+    ops = []
+    if not now:
+        ops.append({"range": "'Evolution'!A1:%s1" % col(len(EVOLUTION)), "values": [EVOLUTION]})
+    if not rep or rep.get("date") != date:
+        return [], ops
+    today = dmy(date)
+    have = {tuple(r[:6]) for r in now[1:] if r}
+    rows = []
+    for pid, p in (rep.get("patients") or {}).items():
+        for c in p.get("changes") or []:
+            r = [cell(v) for v in (pid, today, c.get("field", ""), c.get("kind", ""), c.get("old", ""), c.get("new", ""),
+                                   c.get("source", "") if c.get("explained") else "UNEXPLAINED", today)]
+            if tuple(bare(x) for x in r[:6]) not in have:
+                rows.append(r); have.add(tuple(bare(x) for x in r[:6]))
+    start = max(len(now), 1) + 1
+    for i in range(0, len(rows), 60):
+        part = rows[i:i + 60]
+        ops.append({"range": "'Evolution'!A%d:%s%d" % (start + i, col(len(EVOLUTION)), start + i + len(part) - 1), "values": part})
+    return rows, ops
+
+
+# ------------------------------------------------------------------ Gemini Review (28.11.2026)
+def review_rows(vals):
+    """[(sheet row number, row padded to 11)] for every row of the Gemini Review tab with a Statement."""
+    out = []
+    hdr = bool(vals) and [x.strip() for x in vals[0][:2]] == REVIEW[:2]
+    for n, r in enumerate(vals[1:] if hdr else vals, 2 if hdr else 1):
+        r = (r + [""] * len(REVIEW))[:len(REVIEW)]
+        if r[5].strip() or r[4].strip():
+            out.append((n, r))
+    return out
+
+
+def review_age(r, today):
+    """Rounds a row has had: days since Gemini dated it."""
+    return days(r[0], today) if r[0].strip() else 0
+
+
+def cmd_review(a):
+    rows = review_rows(raw_values(a.review))
+    opn = [(n, r) for n, r in rows if not r[7].strip()]
+    late = [(n, r) for n, r in opn if review_age(r, a.date) > 1]
+    lines = ["Gemini Review %s: %d open point(s) to answer (reply accepted | rejected | partly, with the reason; check the sources first)"
+             % (a.date, len(opn)), ""]
+    for n, r in opn:
+        lines.append("row %d | %s | %s %s | %s | %s | %s | evidence: %s%s" % (n, r[0], r[1], r[2], r[3], r[4], r[5], r[6],
+                     " | OPEN MORE THAN ONE ROUND (will be escalated)" if review_age(r, a.date) > 1 else ""))
+    unresolved = [(n, r) for n, r in rows if r[7].strip() and not r[9].strip()]
+    if unresolved:
+        lines += ["", "Answered but not resolved:"] + ["row %d | %s | %s | %s: %s" % (n, r[1], r[3], r[7], r[8]) for n, r in unresolved]
+    os.makedirs(a.outdir, exist_ok=True)
+    open(os.path.join(a.outdir, "review_open.txt"), "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    print("REVIEW OK: %d open, %d open more than one round, %d answered but unresolved" % (len(opn), len(late), len(unresolved)))
+    return 0
+
+
+def cmd_reviewreply(a):
+    rows = dict(review_rows(raw_values(a.review)))
+    rep = jload(a.replies) or {}
+    today = dmy(a.date)
+    out, errs = {}, []
+    for k, v in rep.items():
+        try:
+            n = int(k)
+        except ValueError:
+            errs.append("row %r is not a row number" % k); continue
+        r = rows.get(n)
+        reply = ((v or {}).get("reply") or "").strip().lower()
+        reason = ((v or {}).get("reason") or "").strip()
+        if r is None:
+            errs.append("row %d is not a Gemini Review point" % n); continue
+        if r[7].strip():
+            errs.append("row %d already has a Claude reply (%s)" % (n, r[7])); continue
+        if reply not in REVIEW_REPLIES or not reason:
+            errs.append("row %d: reply must be accepted | rejected | partly, with a reason" % n); continue
+        resolved = today if reply == "accepted" else ""
+        esc = "" if resolved else "Y"          # rejected or partly: still unresolved after its round, for Chris
+        out[n] = [reply, cell(reason), cell(resolved), esc]
+    # an open point nobody answered for more than one round is escalated (only the Escalated cell is written)
+    for n, r in rows.items():
+        if n not in out and not r[7].strip() and not r[10].strip() and review_age(r, a.date) > 1:
+            out[n] = [None, None, None, "Y"]
+    if errs:
+        for e in errs:
+            print("ERROR " + e)
+        print("REVIEWREPLY FAILED: %d error(s)" % len(errs)); return 1
+    ops = []
+    first, last = col(REVIEW_GEMINI + 1), col(len(REVIEW))
+    rws = sorted(out)
+    i = 0
+    while i < len(rws):
+        j = i
+        while j + 1 < len(rws) and rws[j + 1] == rws[j] + 1 and j - i < 39:
+            j += 1
+        ops.append({"range": "'Gemini Review'!%s%d:%s%d" % (first, rws[i], last, rws[j]), "values": [out[x] for x in rws[i:j + 1]]})
+        i = j + 1
+    os.makedirs(a.outdir, exist_ok=True)
+    json.dump(ops, open(os.path.join(a.outdir, "review_ops.json"), "w"), ensure_ascii=True)
+    nrep = sum(1 for x in out.values() if x[0]); nesc = sum(1 for x in out.values() if x[3] == "Y")
+    print("REVIEWREPLY OK: %d repl(ies), %d escalated, %d update_values call(s) in review_ops.json (columns %s..%s only; null cells are skipped by Sheets)"
+          % (nrep, nesc, len(ops), first, last))
     return 0
 
 
@@ -990,6 +1122,8 @@ def schema_rows(which):
                 ["Feed Cultures", "pid + Collected + Specimen + SID", j(TABS["Feed Cultures"][0]), "Every lab specimen of the stay read from Daily Cultures, never dropped: Status 'Final dd/mm/yy' (finalised) or 'Not final, latest dd/mm/yy' (newest reading, still open). Not-final rows stay until their final arrives. Summary = one display line in the card style (organism with S and R, or the negative result); Organisms, S, R = the same parts split out; Pattern = the resistance pattern per organism, same order as Organisms, joined by '; ' (e.g. MRSA, MSSA, methicillin R, VRE, HLAR, ESBL or AmpC or NDM only when the lab wrote it, 3rd-gen ceph R, carbapenem R, DTR, FQ R, aminoglycoside R, T/S R, fluconazole R, echinocandin R, pan-S, no key resistance, AST pending, no AST, AST conflicting, check, AST not split by organism); show it as given, never infer; Notes = the raw bench text, never to be parsed."],
                 ["Feed Daily Report", "pid + Date + Bench no.", j(TABS["Feed Daily Report"][0]), "Bench Daily Report preliminary lines (e.g. 'Blood' / 'GNB') for patients on the ID list, shown only while no Feed Cultures row carries that bench number; the row is cleared once the culture is updated."],
                 ["Feed Changes", "(log, append only)", j(CHANGES), "Every cell the run changed: Old and New values. (new row) and (removed) for whole rows."],
+                ["Evolution", "(log, append only)", j(EVOLUTION), "Notes evolve, never rewritten: every change the day made to yesterday's synthesis of a carried admission, one row per change. Field = one_liner, issues, abx, id_plan, im_detail, steroids, devices, micro, micro_recap, pendings, conflicts, not_applied, vitals. Kind: NEW | AMENDED | RETRACTED. Source = what made the change (UNEXPLAINED if none was given). Earlier days' rows are kept."],
+                ["Gemini Review", "Date + pid + Field", j(REVIEW), "Gemini's daily assessment of the notes. Gemini writes Date..Evidence (View: agree | disagree | missing | suggestion); the morning run answers the next day in Claude reply (accepted | rejected | partly), Claude reason, Resolved (dd/mm/yy) and Escalated (Y when still unresolved after one round, for Chris). The run never writes Gemini's columns."],
                 ["(any tab)", "a pid absent from Feed Patients", "", "The admission has left the feed: its block is FINAL and no culture is awaited."]]
     return [SCHEMA_HDR,
             ["Schema", "Tab", j(SCHEMA_HDR), "This contract, written by the morning run. schema_version " + SCHEMA_VERSION + "; any header change bumps it. " + RULES],
@@ -1048,7 +1182,9 @@ def cmd_schema(a):
 
 def main():
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd")
-    p = sp.add_parser("feed"); [p.add_argument(x) for x in ("state", "census", "ams_blocks", "cultures", "nowdir", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10)
+    p = sp.add_parser("feed"); [p.add_argument(x) for x in ("state", "census", "ams_blocks", "cultures", "nowdir", "outdir")]; p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10); p.add_argument("--evolution")
+    p = sp.add_parser("review"); p.add_argument("review"); p.add_argument("outdir"); p.add_argument("--date", required=True)
+    p = sp.add_parser("reviewreply"); p.add_argument("replies"); p.add_argument("review"); p.add_argument("outdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("op"); p.add_argument("ops"); p.add_argument("n", type=int)
     p = sp.add_parser("feedcheck"); p.add_argument("desired"); p.add_argument("nowdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("final"); p.add_argument("state"); p.add_argument("index"); p.add_argument("cultures"); p.add_argument("--date", required=True)
@@ -1064,7 +1200,7 @@ def main():
         print(__doc__); return 0
     return {"feed": cmd_feed, "op": cmd_op, "feedcheck": cmd_feedcheck, "final": cmd_final, "checkreg": cmd_checkreg,
             "vqueue": cmd_vqueue, "vwrite": cmd_vwrite, "regjoin2": cmd_regjoin2, "backfill": cmd_backfill,
-            "schema": cmd_schema, "svccheck": cmd_svccheck}[a.cmd](a)
+            "schema": cmd_schema, "svccheck": cmd_svccheck, "review": cmd_review, "reviewreply": cmd_reviewreply}[a.cmd](a)
 
 
 if __name__ == "__main__":
