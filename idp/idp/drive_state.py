@@ -258,11 +258,11 @@ def unpackchain(inputs, out_p):
         m = re.match(r"\s*IDP-PATCH (\S+) base (\S+) part (\d+)/(\d+) sha256=([0-9a-f]{64})", b)
         if m:
             patches.setdefault((m.group(1), m.group(2), int(m.group(4)), m.group(5)), {})[int(m.group(3))] = b.split("\n", 1)[1]
-    state = None
+    state, unusable = None, []
     for key in sorted(bases, key=lambda k: k[0], reverse=True):
         date, N, sha = key
         if set(bases[key]) != set(range(1, N + 1)):
-            print("chain: base %s incomplete (%d of %d parts), skipped" % (date, len(bases[key]), N)); continue
+            print("chain: base %s incomplete (%d of %d parts), skipped" % (date, len(bases[key]), N)); unusable.append(date); continue
         tmp = tempfile.mkdtemp()
         ok = unpack([bases[key][i] for i in range(1, N + 1)], os.path.join(tmp, "s.json")) == 0
         if ok:
@@ -270,6 +270,9 @@ def unpackchain(inputs, out_p):
         import shutil; shutil.rmtree(tmp, ignore_errors=True)  # OVERLAY_7: no state copy left behind
         if ok:
             break
+        unusable.append(date)
+    if state is not None and unusable:   # round 2 T5: run.py post writes a full base after a fallback
+        print("chain: fallback to base %s (newer base(s) %s unusable)" % (state.get("date"), ", ".join(unusable)))
     if state is None:
         print("CHAIN FAILED: no complete IDP State base"); return 1
     base_date = state.get("date"); steps = []
