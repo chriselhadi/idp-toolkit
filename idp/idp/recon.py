@@ -12,6 +12,8 @@ Usage:
            [--digest in/digest.txt --cultures in/cultures.txt]   digest plain text: first line "Culture Digest dd/mm/yyyy"
            [--missing out/missing_cultures.txt] [--fixed out/fixed.txt]
            [--reg-sheet in/reg_Register.json --feed-dir in/feed_now]   register (read this morning) vs the feed Gemini had (read before the run wrote it)
+           [--evolution out/evolution.json]      idp10 evolve: counts of NEW / AMENDED / RETRACTED, unexplained (CHECKED)
+           [--review in/feed_now/review.json]    Gemini Review tab: Escalated rows and rejected points (NEEDS YOU)
 
 Every input is optional: a missing one is reported as "not checked". Writes the text body to --out and a JSON
 summary next to it. Exit 0 always; prints RECON OK with counts.
@@ -65,7 +67,7 @@ def roster_names(text):
 def main():
     ap = argparse.ArgumentParser()
     for k in ("date", "out", "svc", "roster_yday", "recaps", "state", "census", "coverage", "vqueue", "queue", "glog",
-              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir"):
+              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir", "evolution", "review"):
         ap.add_argument("--" + k.replace("_", "-"), dest=k, required=k in ("date", "out"))
     a = ap.parse_args()
     today = a.date
@@ -250,6 +252,32 @@ def main():
             ok.append("Register blocks of today's list hold every course and final culture in the feed")
     else:
         notchk.append("Register blocks vs feed")
+    # 8. Notes evolve, never rewritten (28.11.2026): what changed against yesterday's synthesis, and Gemini's review
+    ev = load(a.evolution)
+    if isinstance(ev, dict) and "counts" in ev:
+        c = ev.get("counts") or {}
+        ok.append("Evolution: %d change(s) to yesterday's synthesis explained (NEW %d, AMENDED %d, RETRACTED %d), %d unexplained"
+                  % (ev.get("explained", 0), c.get("NEW", 0), c.get("AMENDED", 0), c.get("RETRACTED", 0), ev.get("unexplained", 0)))
+    else:
+        notchk.append("Evolution (no evolution.json)")
+    rv = sheet_rows(load(a.review))
+    if rv:
+        hdr = [x.strip() for x in rv[0][:2]] == ["Date", "pid"]
+        npts = nesc = nrej = 0
+        for n, r in enumerate(rv[1:] if hdr else rv, 2 if hdr else 1):
+            r = [("" if x is None else str(x)).lstrip("'") for x in r] + [""] * 11
+            if not (r[5].strip() or r[4].strip()):
+                continue
+            npts += 1
+            esc, rej = r[10].strip().upper() == "Y", r[7].strip().lower() == "rejected"
+            if esc or rej:
+                nesc += esc; nrej += rej
+                need.append("Gemini review row %d (%s %s, %s, %s): %s%s%s" % (
+                    n, r[1], r[2], r[3], r[4], r[5][:160], " ; Claude %s: %s" % (r[7], r[8][:160]) if r[7] else " ; no reply yet",
+                    " [escalated]" if esc else ""))
+        ok.append("Gemini review: %d point(s), %d escalated, %d rejected" % (npts, nesc, nrej))
+    else:
+        notchk.append("Gemini review")
     d = dt.date.fromisoformat(today).strftime("%d.%m.%Y")
     lines = ["ID Reconciliation %s" % d, "", "NEEDS YOU (%d)" % len(need)]
     lines += ["%d. %s" % (i + 1, x) for i, x in enumerate(need)] or ["none"]

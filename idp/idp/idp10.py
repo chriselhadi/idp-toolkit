@@ -2,7 +2,11 @@
 """OVERLAY_10 (25.10.2026): carried synthesis, discharge register, culture watch.
 
   idp10.py base     <state.json|MISSING> <census.json> <register.json|MISSING> <out synth_base.py> --date YYYY-MM-DD
-  idp10.py apply    <synth_base.py> <synth_delta.py> <out synth.py> --date YYYY-MM-DD
+  idp10.py apply    <synth_base.py> <synth_delta.py> <out synth.py> --date YYYY-MM-DD   (alias: assemble; carries CHANGES)
+  idp10.py evolve   <synth.py> <yesterday's state.json> <out dir> --date YYYY-MM-DD
+              every difference between today's entry and yesterday's synthesis of a carried pid must be explained
+              by synth.py CHANGES = {pid: [{field, kind NEW|AMENDED|RETRACTED, old, new, source}]};
+              writes evolution.txt and evolution.json, exit 1 while any difference is unexplained
   idp10.py depart   <state_new.json> <ams_blocks.json|MISSING> <register.json|MISSING> <out dir> --date YYYY-MM-DD [--backlog 10]
   idp10.py verify   <out dir/register_rows.json> <readback.json>
   idp10.py strip    <state_new.json> <out dir/register_rows.json> --cultures out/cultures.json --date YYYY-MM-DD
@@ -287,10 +291,170 @@ def cmd_apply(a):
         f.write("SYNTH = " + pprint.pformat(synth, width=160, sort_dicts=False) + "\n")
         for k in ("SIGNED_OFF", "FLAGS_EXTRA", "OBSERVATIONS", "WA"):
             f.write("%s = %s\n" % (k, pprint.pformat(getattr(D, k, {} if k in ("SIGNED_OFF", "WA") else []), width=160, sort_dicts=False)))
+        # 28.11.2026: CHANGES explains every difference from yesterday's synthesis (checked by `evolve`)
+        f.write("CHANGES = %s\n" % pprint.pformat(getattr(D, "CHANGES", {}), width=160, sort_dicts=False))
     for u in untouched:
         print("carried unchanged (no DELTA): " + u)
     print("APPLY OK: %d entries (%d delta, %d new, %d carried unchanged)" % (len(synth), len(delta), len(new), len(untouched)))
     return 0
+
+
+# ------------------------------------------------------------------ evolution (Chris, 28.11.2026)
+# Notes evolve, never get rewritten: each field of today's entry is compared with yesterday's synthesis, and every
+# difference must be explained by a CHANGES entry in synth.py (field, kind, old, new, source).
+EVOLVE_FIELDS = ("one_liner", "issues", "abx", "id_plan", "im_detail", "steroids", "devices", "micro", "micro_recap",
+                 "pendings", "conflicts", "not_applied", "vitals")
+EVOLVE_ALIAS = {"dx": "issues", "issues.dx": "issues", "abx_other": "abx", "issues.abx": "abx"}
+KINDS = ("NEW", "AMENDED", "RETRACTED")
+
+
+def _ws(s):
+    return re.sub(r"\s+", " ", s if isinstance(s, str) else ("" if s is None else str(s))).strip()
+
+
+def evolve_view(e):
+    """{field: str or list of str} for the compared fields of one synth entry."""
+    e = e or {}
+    issues = [i for i in (e.get("issues") or []) if isinstance(i, dict)]
+    v = {"one_liner": _ws(e.get("one_liner")), "micro_recap": _ws(e.get("micro_recap")),
+         "issues": [_ws(i.get("dx")) for i in issues],
+         "abx": [_ws(l) for i in issues for l in i.get("abx") or []] + [_ws(l) for l in e.get("abx_other") or []],
+         "not_applied": ["%s: %s" % (_ws(k), _ws(x)) for k, x in (e.get("not_applied") or {}).items()]
+                        if isinstance(e.get("not_applied"), dict) else [_ws(x) for x in e.get("not_applied") or []]}
+    for k in ("id_plan", "im_detail", "steroids", "devices", "micro", "pendings", "conflicts", "vitals"):
+        v[k] = [_ws(x) for x in (e.get(k) or [])]
+    return v
+
+
+def _item_key(field, s):
+    """What identifies a list item across days (a drug, a diagnosis, a specimen), so an edit pairs with its old text."""
+    if field == "abx" or field == "steroids":
+        return s.split(" ", 1)[0].lower()
+    if field == "not_applied":
+        return s.split(":", 1)[0].lower()
+    if field in ("issues", "pendings"):
+        return s.split(" (", 1)[0].lower()
+    if field == "micro":
+        return " ".join(s.split()[:2]).lower()
+    if field == "devices":
+        return re.sub(r"\b\d\d/\d\d\b.*", "", s).strip().lower()
+    return None
+
+
+def list_diff(field, old, new):
+    """[(kind, old, new)] for two lists of strings: an added item is NEW, a removed one RETRACTED, an edited one AMENDED."""
+    import difflib
+    o, n = list(old), list(new)
+    for x in list(o):                       # exact survivors (any position) are not changes
+        if x in n:
+            o.remove(x); n.remove(x)
+    out = []
+    for x in list(o):                       # pair an edit by its key (same drug, same dx, same specimen)
+        k = _item_key(field, x)
+        hit = [y for y in n if k and _item_key(field, y) == k]
+        if len(hit) == 1 and sum(1 for z in o if _item_key(field, z) == k) == 1:
+            out.append(("AMENDED", x, hit[0])); o.remove(x); n.remove(hit[0])
+    while o and n:                          # then by wording, most similar first
+        r, x, y = max((difflib.SequenceMatcher(None, x.lower(), y.lower()).ratio(), x, y) for x in o for y in n)
+        if r < 0.5:
+            break
+        out.append(("AMENDED", x, y)); o.remove(x); n.remove(y)
+    out += [("RETRACTED", x, "") for x in o] + [("NEW", "", y) for y in n]
+    return out
+
+
+def field_diff(field, old, new):
+    if isinstance(old, list):
+        return list_diff(field, old, new)
+    if old == new:
+        return []
+    return [("NEW" if not old else "RETRACTED" if not new else "AMENDED", old, new)]
+
+
+def _covers(c, field, kind, old, new):
+    f = EVOLVE_ALIAS.get(c.get("field"), c.get("field"))
+    if f != field and not (f == "issues" and field == "abx"):
+        return False
+    if (c.get("kind") or "").upper() != kind:
+        return False
+    co, cn = _ws(c.get("old")), _ws(c.get("new"))
+    if kind == "NEW":
+        return cn == new
+    if kind == "RETRACTED":
+        return co == old
+    return cn == new and (not co or co == old)
+
+
+def evolve(synth, changes, state):
+    """Compare each carried pid's entry with yesterday's; returns the report dict."""
+    pats = (state or {}).get("patients", {})
+    rep = {"patients": {}, "explained": 0, "unexplained": 0, "counts": {k: 0 for k in KINDS}, "by_field": {},
+           "unexplained_by_field": {}, "new_today": 0, "carried": 0, "unused": []}
+    for pid, e in synth.items():
+        sy = (pats.get(pid) or {}).get("synth") or {}
+        if not (sy.get("issues") is not None and sy.get("one_liner")):
+            rep["new_today"] += 1; continue
+        rep["carried"] += 1
+        yv, tv = evolve_view(sy), evolve_view(e)
+        cl = [c for c in (changes or {}).get(pid, []) if isinstance(c, dict)]
+        used, rows = set(), []
+        for f in EVOLVE_FIELDS:
+            for kind, old, new in field_diff(f, yv[f], tv[f]):
+                hit = next((i for i, c in enumerate(cl) if i not in used and _covers(c, f, kind, old, new)), None)
+                src = _ws(cl[hit].get("source")) if hit is not None else ""
+                ok = hit is not None and bool(src)
+                if hit is not None:
+                    used.add(hit)
+                rows.append({"field": f, "kind": kind, "old": old, "new": new, "source": src, "explained": ok,
+                             "why": "" if ok else ("CHANGES entry has no source" if hit is not None else "no CHANGES entry")})
+                rep["explained" if ok else "unexplained"] += 1
+                rep["counts"][kind] += 1
+                rep["by_field"][f] = rep["by_field"].get(f, 0) + 1
+                if not ok:
+                    rep["unexplained_by_field"][f] = rep["unexplained_by_field"].get(f, 0) + 1
+        for i, c in enumerate(cl):
+            if i not in used:
+                rep["unused"].append({"pid": pid, "field": c.get("field"), "kind": c.get("kind"),
+                                      "old": _ws(c.get("old")), "new": _ws(c.get("new"))})
+        if rows:
+            rep["patients"][pid] = {"name": e.get("name", ""), "changes": rows}
+    return rep
+
+
+def cmd_evolve(a):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("synth_evolve", a.synth)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    synth, changes = getattr(m, "SYNTH", {}) or {}, getattr(m, "CHANGES", {}) or {}
+    rep = evolve(synth, changes, jload(a.state))
+    rep["date"] = a.date
+    os.makedirs(a.outdir, exist_ok=True)
+    cut = lambda s: s if len(s) <= 300 else s[:297] + "..."
+    lines = ["Evolution %s: %d carried entries compared with yesterday's synthesis (%d new today, not compared)"
+             % (a.date, rep["carried"], rep["new_today"]), ""]
+    for pid, p in rep["patients"].items():
+        lines.append("%s %s" % (pid, p["name"]))
+        for c in p["changes"]:
+            what = ("%r -> %r" % (cut(c["old"]), cut(c["new"]))) if c["kind"] == "AMENDED" else repr(cut(c["new"] or c["old"]))
+            if c["explained"]:
+                lines.append("  %s %s: %s [source: %s]" % (c["kind"], c["field"], what, c["source"]))
+            else:
+                lines.append("  UNEXPLAINED %s %s: %s (%s: add a CHANGES entry or restore yesterday's text)"
+                             % (c["kind"], c["field"], what, c["why"]))
+        lines.append("")
+    for u in rep["unused"]:
+        lines.append("UNUSED CHANGES entry %s %s %s: matches no difference (old %r, new %r)"
+                     % (u["pid"], u["kind"], u["field"], cut(u["old"]), cut(u["new"])))
+    summary = "EVOLVE OK: %d changes explained, %d unexplained" % (rep["explained"], rep["unexplained"])
+    lines += ["", "counts: %s" % ", ".join("%s %d" % (k, rep["counts"][k]) for k in KINDS), summary]
+    open(os.path.join(a.outdir, "evolution.txt"), "w", encoding="utf-8").write("\n".join(lines) + "\n")
+    json.dump(rep, open(os.path.join(a.outdir, "evolution.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    for u in rep["unused"]:
+        print("WARN unused CHANGES entry %s %s %s" % (u["pid"], u["kind"], u["field"]))
+    if rep["unexplained"]:
+        print("unexplained by field: " + ", ".join("%s %d" % kv for kv in sorted(rep["unexplained_by_field"].items(), key=lambda kv: -kv[1])))
+    print(summary)
+    return 1 if rep["unexplained"] else 0
 
 
 # ------------------------------------------------------------------ discharge register
@@ -540,7 +704,9 @@ def cmd_readmit(a):
 def main():
     ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd")
     p = sp.add_parser("base"); p.add_argument("state"); p.add_argument("census"); p.add_argument("register"); p.add_argument("out"); p.add_argument("--date", required=True)
-    p = sp.add_parser("apply"); p.add_argument("base"); p.add_argument("delta"); p.add_argument("out"); p.add_argument("--date", required=True)
+    for nm in ("apply", "assemble"):
+        p = sp.add_parser(nm); p.add_argument("base"); p.add_argument("delta"); p.add_argument("out"); p.add_argument("--date", required=True)
+    p = sp.add_parser("evolve"); p.add_argument("synth"); p.add_argument("state"); p.add_argument("outdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("depart"); p.add_argument("state"); p.add_argument("ams_blocks"); p.add_argument("register"); p.add_argument("outdir"); p.add_argument("--date", required=True); p.add_argument("--backlog", type=int, default=10)
     p = sp.add_parser("verify"); p.add_argument("rows"); p.add_argument("readback")
     p = sp.add_parser("strip"); p.add_argument("state"); p.add_argument("rows"); p.add_argument("--cultures", default="MISSING"); p.add_argument("--date", required=True)
@@ -550,7 +716,7 @@ def main():
     a = ap.parse_args()
     if not a.cmd:
         print(__doc__); return 2
-    return {"base": cmd_base, "apply": cmd_apply, "depart": cmd_depart, "verify": cmd_verify, "strip": cmd_strip,
+    return {"base": cmd_base, "apply": cmd_apply, "assemble": cmd_apply, "evolve": cmd_evolve, "depart": cmd_depart, "verify": cmd_verify, "strip": cmd_strip,
             "watch": cmd_watch, "readmit": cmd_readmit, "regjoin": cmd_regjoin}[a.cmd](a)
 
 

@@ -211,7 +211,7 @@ ok("idp11_apostrophe", X.cell("123456") == "'123456" and X.cell("05/10") == "'05
    and X.cell("Mero IV q8h") == "Mero IV q8h" and X.bare("'05/10") == "05/10")
 ok("idp11_dates_ddmmyy", X.dmy("2026-10-29") == "29/10/26")
 hdr = X.TABS["Feed Patients"][0]
-ok("idp11_feed_header_v5", hdr[-7:] == ["AMS block", "IM", "Steroids", "Lines", "Not applied", "Updates today", "Updated"] and X.SCHEMA_VERSION == "5"
+ok("idp11_feed_header_v6", hdr[-7:] == ["AMS block", "IM", "Steroids", "Lines", "Not applied", "Updates today", "Updated"] and X.SCHEMA_VERSION == "6"
    and X.TABS["Feed Cultures"][0][:10] == ["pid", "Collected", "Specimen", "SID", "Summary", "Organisms", "S", "R", "Pattern", "Status"]
    and X.TABS["Feed Daily Report"][0][:5] == ["pid", "Date", "Bench no.", "Specimen", "Preliminary result"])
 # Feed Cultures labels: finalised vs latest-not-finalised, never dropped (Chris 03.11.2026)

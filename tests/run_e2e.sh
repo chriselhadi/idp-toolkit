@@ -334,4 +334,10 @@ python3 "$T/tests/test_idp9.py" "$I" "$W/idp9" || fail idp9_layout "tests/test_i
 # ---------------- Regressions: AMS block ends, export size, word rooms on the roster, shared rooms ----------------
 python3 "$T/tests/test_fixes.py" "$I" "$W/fixes" "$D2" || fail fixes "tests/test_fixes.py failed"
 
+# ---------------- Notes evolve, never rewritten (28.11.2026): evolve, Evolution and Gemini Review tabs, recon ----------------
+cd "$D2"
+python3 "$I/idp10.py" evolve synth.py "$D1/out/state_new.json" out_evolve --date 2026-09-07 | tee evolve.txt || fail evolve_day2 "unexplained changes in the unchanged fixture"
+grepcheck evolve_day2 "EVOLVE OK: 0 changes explained, 0 unexplained" evolve.txt
+python3 "$T/tests/test_evolve.py" "$I" "$W/evolve" "$D2" || fail evolve "tests/test_evolve.py failed"
+
 echo "E2E OK: $W"
