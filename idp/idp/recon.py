@@ -14,6 +14,8 @@ Usage:
            [--reg-sheet in/reg_Register.json --feed-dir in/feed_now]   register (read this morning) vs the feed Gemini had (read before the run wrote it)
            [--evolution out/evolution.json]      idp10 evolve: counts of NEW / AMENDED / RETRACTED, unexplained (CHECKED)
            [--review in/feed_now/review.json]    Gemini Review tab: Escalated rows and rejected points (NEEDS YOU)
+           [--items <file>]      run items, one per line (e.g. "possibly gone: P0123 ...", "ROOM UNRESOLVED ...",
+                                 "merge P0001 into P0002"); each non-empty line is a NEEDS YOU item with its own key
            [--resolved <json>]   items Chris answered: a list of {key, until} or the 'Answered Items' tab get_values
                                  (Key | Date answered | Item | Chris answer | Applied as | Until); listed keys are skipped
                                  while until is empty or >= today, and counted under CHECKED
@@ -178,7 +180,7 @@ def roster_names(text):
 def main():
     ap = argparse.ArgumentParser()
     for k in ("date", "out", "svc", "roster_yday", "recaps", "state", "census", "coverage", "vqueue", "queue", "glog",
-              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir", "evolution", "review", "resolved", "learned"):
+              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir", "evolution", "review", "resolved", "learned", "items"):
         ap.add_argument("--" + k.replace("_", "-"), dest=k, required=k in ("date", "out"))
     a = ap.parse_args()
     today = a.date
@@ -401,6 +403,19 @@ def main():
         ok.append("Gemini review: %d point(s), %d escalated, %d rejected" % (npts, nesc, nrej))
     else:
         notchk.append("Gemini review")
+    # 9. Items the run itself raised for Chris (out/run_items.txt, 28.11.2026): one per non-empty line
+    if a.items:
+        if os.path.exists(a.items):
+            nit = 0
+            for l in open(a.items, encoding="utf-8", errors="ignore").read().splitlines():
+                t = re.sub(r"^\s*[-*\u2022]\s*", "", l).strip()
+                if t:
+                    nit += 1
+                    add("run_item", "Run", "Run: " + t)
+            if not nit:
+                ok.append("Run: no item raised for Chris")
+        else:
+            notchk.append("run items (%s missing)" % os.path.basename(a.items))
     if skipped[0]:
         ok.append("%d item(s) already answered by Chris, not repeated" % skipped[0])
     learned = load_learned(a.learned, today, yday) if a.learned else None

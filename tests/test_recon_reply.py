@@ -5,7 +5,7 @@ the 'Learned Rules' / 'Answered Items' feed tabs), the HOW TO ANSWER footer, and
 Usage: test_recon_reply.py <toolkit idp/idp dir> <workdir>
 Prints "CHECK <name> OK" per check; exit 1 on the first failure; "RECON REPLY TESTS OK" at the end.
 """
-import json, os, shutil, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 
 I, W = sys.argv[1], sys.argv[2]
 shutil.rmtree(W, ignore_errors=True)
@@ -169,3 +169,31 @@ write("reply3.txt", "Thanks, all fine.\n\nOn Sat, 28 Nov 2026, X wrote:\n" + "\n
 rc, o = run(os.path.join(I, "recon_reply.py"), P("reply3.txt"), P("r.json"), P("rep4"), "--date", "2026-11-29")
 ok("reply_nothing", "REPLY OK: 0 answers, 0 rules, 0 undo, 0 unparsed" in o, o)
 print("RECON REPLY TESTS OK")
+
+# --items (28.11.2026): each non-empty line of out/run_items.txt is a NEEDS YOU item with a stable key
+write("items27.txt", "possibly gone: P0123 Mike Example One, not on the AS list since 26/11\n\n"
+                     "ROOM UNRESOLVED November Example Two (roster 708B, AS list blank)\n- merge P0001 into P0002\n   \n")
+write("items28.txt", "possibly gone: P0123 Mike Example One, not on the AS list since 27/11\n"
+                     "ROOM UNRESOLVED November Example Two (roster 708B, AS list blank)\nmerge P0001 into P0002\n")
+rc, o = run(os.path.join(I, "recon.py"), "--date", "2026-11-27", "--out", P("ri27.txt"), "--items", P("items27.txt"))
+ri27 = json.load(open(P("ri27.json")))
+rc2, o2 = run(os.path.join(I, "recon.py"), "--date", "2026-11-28", "--out", P("ri28.txt"), "--items", P("items28.txt"))
+ri28, rt28 = json.load(open(P("ri28.json"))), open(P("ri28.txt")).read()
+ok("items_need_you", rc == 0 and rc2 == 0 and "RECON OK: 3 need Chris" in o2
+   and [x["text"] for x in ri28["need"]] == ["Run: possibly gone: P0123 Mike Example One, not on the AS list since 27/11",
+                                            "Run: ROOM UNRESOLVED November Example Two (roster 708B, AS list blank)",
+                                            "Run: merge P0001 into P0002"], o2 + json.dumps(ri28["need"]))
+ok("items_keys_stable", [x["key"] for x in ri27["need"]] == [x["key"] for x in ri28["need"]]
+   and all(re.fullmatch(r"k[0-9a-f]{8}", x["key"]) for x in ri28["need"]) and len({x["key"] for x in ri28["need"]}) == 3, ri27["need"])
+ok("items_lines_in_body", "3. Run: merge P0001 into P0002 [%s]" % ri28["need"][2]["key"] in rt28, rt28)
+json.dump([{"key": ri28["need"][2]["key"], "until": ""}], open(P("ri_res.json"), "w"))
+rc, o = run(os.path.join(I, "recon.py"), "--date", "2026-11-28", "--out", P("ri28b.txt"), "--items", P("items28.txt"), "--resolved", P("ri_res.json"))
+ok("items_answered_skipped", "RECON OK: 2 need Chris" in o and "1 already answered" in o, o)
+write("items_empty.txt", "\n  \n")
+rc, o = run(os.path.join(I, "recon.py"), "--date", "2026-11-28", "--out", P("ri_e.txt"), "--items", P("items_empty.txt"))
+ok("items_empty_file", "RECON OK: 0 need Chris" in o and "Run: no item raised for Chris" in open(P("ri_e.txt")).read(), o)
+rc, o = run(os.path.join(I, "recon.py"), "--date", "2026-11-28", "--out", P("ri_m.txt"), "--items", P("no_such_items.txt"))
+ok("items_missing_file", rc == 0 and "run items (no_such_items.txt missing)" in open(P("ri_m.txt")).read(), o)
+rc, o = run(os.path.join(I, "recon.py"), "--date", "2026-11-28", "--out", P("ri_n.txt"))
+ok("items_flag_absent", "run items" not in open(P("ri_n.txt")).read().lower() and "Run:" not in open(P("ri_n.txt")).read())
+print("RECON ITEMS TESTS OK")

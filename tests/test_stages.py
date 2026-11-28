@@ -11,7 +11,7 @@ Prints "CHECK <name> OK" per check; exit 1 on the first failure; "STAGES TESTS O
   D. learned rules: plain-answer rules "proposed", RULE: lines "active", promote after one email, undo, active_rules
   E. coverage gate: misses, waivers, tolerant matching
 """
-import json, os, runpy, shutil, subprocess, sys
+import json, os, re, runpy, shutil, subprocess, sys
 
 I, W, D1, D2 = sys.argv[1:5]
 I = os.path.abspath(I)
@@ -142,11 +142,15 @@ J(os.path.join(S, "out", "answered_rows.json"), ar)
 rc, o = run(os.path.join(I, "recon_reply.py"), "addrule", os.path.join(S, "out"), "--date", "2026-09-07", "--from", "k1234abcd",
             "--rules-tab", os.path.join(S, "in", "feed_now", "rules.json"), "A culture phoned by the lab counts as reported")
 ok("addrule_proposed", rc == 0 and "L6 proposed" in o and J(os.path.join(S, "out", "rule_rows.json"))[-1][4] == "proposed", o)
+write(os.path.join(S, "out", "run_items.txt"), "possibly gone: P0010 Juliet Example, not on the AS list since 06/09\n\nmerge P0013 into P0002\n")
 rc, o = run(RUN, "post", "--date", "2026-09-07", "--work", S)
 ok("post_stage_ok", rc == 0 and "STAGE OK: post 2026-09-07" in o, o)
 recon = open(os.path.join(S, "out", "recon.txt")).read()
 ok("recon_learned_proposed", "L6. A culture phoned by the lab counts as reported (from item k1234abcd; proposed, binds tomorrow unless you reply undo)" in recon
    and "L5. A phoned result counts as reported (general rule)" in recon and "Rule two" not in recon, recon)
+rneed = recon.split("NEEDS YOU", 1)[1].split("SETTLED", 1)[0]
+ok("recon_run_items", re.search(r"\d+\. Run: possibly gone: P0010 Juliet Example, not on the AS list since 06/09 \[k[0-9a-f]{8}\]", rneed)
+   and re.search(r"\d+\. Run: merge P0013 into P0002 \[k[0-9a-f]{8}\]", rneed), rneed)
 ok("recon_answered_not_repeated", "k1234abcd]" not in recon.split("SETTLED")[0], recon)
 idx = open(os.path.join(S, "out", "post_ops", "INDEX.txt")).read()
 names = sorted(os.listdir(os.path.join(S, "out", "post_ops")))

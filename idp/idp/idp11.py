@@ -418,6 +418,22 @@ def daily_rows(pid, rec, cx, first):
     return out
 
 
+# Chris 28.11.2026: the AMS app reads an empty cell as unknown/clear, so for Active patients these recap cells say
+# "none documented" when the synthesis holds nothing. Applied in build(), so feed_desired.json (written, read back by
+# feedcheck, compared for Feed Changes) carries the same text everywhere. Non-active rows stay as they are.
+NONE_DOCUMENTED = "none documented"
+NONE_DOCUMENTED_COLS = ("Steroids", "Lines", "IM", "Not applied", "Pendings", "Conflicts", "ID plan", "Imaging", "Micro recap")
+
+
+def fill_none_documented(row):
+    hdr = TABS["Feed Patients"][0]
+    for h in NONE_DOCUMENTED_COLS:
+        i = hdr.index(h)
+        if not str(row[i] or "").strip():
+            row[i] = NONE_DOCUMENTED
+    return row
+
+
 def build(state, census, ams, cx, today, infeed=(), backlog=10):
     rows = {t: [] for t in TABS}
     cen = {p["pid"]: p for p in census.get("patients", [])}
@@ -476,6 +492,8 @@ def build(state, census, ams, cx, today, infeed=(), backlog=10):
             " ; ".join(sy.get("im_detail") or []), " ; ".join(sy.get("steroids") or []), " ; ".join(sy.get("devices") or []),
             " ; ".join("%s: %s" % kv for kv in (sy.get("not_applied") or {}).items()),
             " ; ".join(sy.get("updates") or []) if status == "Active" else ""])
+        if status == "Active":
+            fill_none_documented(rows["Feed Patients"][-1])
         abx = [(i.get("dx", "").split(" | ")[0], l) for i in issues for l in i.get("abx", [])] + [("no linked issue", l) for l in sy.get("abx_other") or []]
         if not abx:
             abx = [(h.get("issue", ""), h.get("line", h.get("drug", ""))) for h in rec.get("abx_history", [])]
@@ -1112,7 +1130,7 @@ def schema_rows(which):
         return [SCHEMA_HDR,
                 ["Schema", "Tab", j(SCHEMA_HDR), "This contract. schema_version " + SCHEMA_VERSION + "; any header change bumps it. " + RULES],
                 ["Meta", "Key", "Key | Value", "schema_version, status (live), last_run (dd/mm/yy), tabs (note for Gemini)"],
-                ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission); the official copy of the day's round for every reader (AMS app, Gemini, audit). Written by the morning run, changed rows only. IM, Steroids, Lines, Not applied and Updates today are the recap card lines. AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
+                ["Feed Patients", "pid", j(fp), "One row per admission the ID service follows (pid = one admission); the official copy of the day's round for every reader (AMS app, Gemini, audit). Written by the morning run, changed rows only. IM, Steroids, Lines, Not applied and Updates today are the recap card lines. On Active rows, Steroids, Lines, IM, Not applied, Pendings, Conflicts, ID plan, Imaging and Micro recap say \"none documented\" when nothing is recorded (an empty cell is not \"clear\"). AMS block = sheet!first row of a hand-made AMS workbook block for the same admission, blank if none."],
                 ["Feed Patients", "Status = Active", "", "On the ID list today. Gemini opens the register block on the first morning it appears."],
                 ["Feed Patients", "Status = Off service dd/mm/yy", "", "Off the ID list but still seen on the AS list, a handoff or an update email; dd/mm/yy = last day on the service."],
                 ["Feed Patients", "Status = Discharged dd/mm/yy", "", "No source shows the patient any more (dd/mm/yy = last day seen), or a past admission fed back in by the backfill; Gemini finalises the block."],
