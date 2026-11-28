@@ -19,7 +19,9 @@ Runs in a fresh cloud container each morning: `bash bootstrap.sh <repo_url> /tmp
 | `split_docx.py` / `verify_part.py` | Email-sized DOCX parts (each a complete document) and the byte-level check of what arrived in Gmail |
 | `report.py` | Run-status line, Delta Report text + HTML with the AMS block, flags for the handout email |
 | `state_io.py` | `finalize` today's state, `pack` it into plain-text email parts, `verify-part` a sent part, `unpack` tomorrow |
-| `build.py` | Orchestrator: validate -> report -> render -> DOCX parts -> state -> coverage -> `handout_body.txt` |
+| `run.py` | Stage commands `prep` / `build` / `post` (28.11.2026): every local step in order, one line each, `STAGE FAIL: <step>: <reason>` at the first failed gate; `post` writes `out/post_ops/` (ordered Drive/Sheets writes + INDEX.txt); `op`, `chkw` |
+| `coverage_gate.py` | Zero-loss gate: dated source sentences and final cultures of census patients must be in a rendered field or in `WAIVED` (also `idp10.py coverage`) |
+| `build.py` | Orchestrator: validate -> report -> render -> delta -> state -> coverage -> recap (no HTML handout since 28.11.2026) |
 
 ## Dry run
 

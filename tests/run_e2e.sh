@@ -77,7 +77,7 @@ grepcheck email_roster_off "OFF today (named yesterday, not in today's email): 7
 python3 "$I/parse_as.py" in/as.eml in/as_today.json | tee as_parse.txt
 grepcheck as_source_d2 "source=attachment:AS list 07.09.2026.XLSX" as_parse.txt
 pycheck as_rows_today 2026-09-07 100011 100010
-python3 "$I/match.py" "$D1/out/state_new.json" in/as_today.json in/wards.json in/ams.json out --date 07.09.2026 --roster in/roster.txt
+python3 "$I/match.py" "$D1/out/state_new.json" in/as_today.json in/wards.json in/ams.json out --date 07.09.2026 --roster in/roster.txt --update-text in/id_email.txt
 pycheck roster_lines
 pycheck blank_bed_keeps_roster_room
 pycheck spelling_variant_no_new_pid "$D1/out/state_new.json"
@@ -342,5 +342,8 @@ python3 "$T/tests/test_evolve.py" "$I" "$W/evolve" "$D2" || fail evolve "tests/t
 
 # ---------------- Chris answers the ID Reconciliation email (28.11.2026): item keys, --resolved, --learned, recon_reply ----------------
 python3 "$T/tests/test_recon_reply.py" "$I" "$W/recon_reply" || fail recon_reply "tests/test_recon_reply.py failed"
+
+# ---------------- Stage commands, membership, AS deadline, learned rules, coverage gate (28.11.2026) ----------------
+python3 "$T/tests/test_stages.py" "$I" "$W/stages" "$D1" "$D2" || fail stages "tests/test_stages.py failed"
 
 echo "E2E OK: $W"

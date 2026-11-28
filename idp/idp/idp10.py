@@ -2,7 +2,7 @@
 """OVERLAY_10 (25.10.2026): carried synthesis, discharge register, culture watch.
 
   idp10.py base     <state.json|MISSING> <census.json> <register.json|MISSING> <out synth_base.py> --date YYYY-MM-DD
-  idp10.py apply    <synth_base.py> <synth_delta.py> <out synth.py> --date YYYY-MM-DD   (alias: assemble; carries CHANGES)
+  idp10.py apply    <synth_base.py> <synth_delta.py> <out synth.py> --date YYYY-MM-DD   (alias: assemble; carries CHANGES, WAIVED)
   idp10.py evolve   <synth.py> <yesterday's state.json> <out dir> --date YYYY-MM-DD
               every difference between today's entry and yesterday's synthesis of a carried pid must be explained
               by synth.py CHANGES = {pid: [{field, kind NEW|AMENDED|RETRACTED, old, new, source}]};
@@ -13,6 +13,10 @@
   idp10.py watch    <state_new.json> <cultures.json> <register.json|MISSING> <out dir> --date YYYY-MM-DD
   idp10.py readmit  <census.json> <register.json|MISSING>
   idp10.py regjoin  <get_values Admissions json|MISSING> <get_values Late cultures json|MISSING> <out register.json>
+  idp10.py coverage <synth.py> <census.json> <out dir> --date YYYY-MM-DD [--day-updates out/day_updates.txt]
+              [--service-list in/service_list.json] [--cultures out/cultures.json] [--days 1] [--warn-only]
+              zero-loss gate (coverage_gate.py): every dated source sentence and final culture row of a census patient
+              is in a rendered field or in synth.py WAIVED; writes coverage_gate.txt, exit 1 on a miss
 
 Every command prints one final line ending in OK or FAILED.
 """
@@ -293,6 +297,8 @@ def cmd_apply(a):
             f.write("%s = %s\n" % (k, pprint.pformat(getattr(D, k, {} if k in ("SIGNED_OFF", "WA") else []), width=160, sort_dicts=False)))
         # 28.11.2026: CHANGES explains every difference from yesterday's synthesis (checked by `evolve`)
         f.write("CHANGES = %s\n" % pprint.pformat(getattr(D, "CHANGES", {}), width=160, sort_dicts=False))
+        # 28.11.2026: source items the coverage gate may skip, each with its reason (coverage_gate.py)
+        f.write("WAIVED = %s\n" % pprint.pformat(getattr(D, "WAIVED", {}), width=160, sort_dicts=False))
     for u in untouched:
         print("carried unchanged (no DELTA): " + u)
     print("APPLY OK: %d entries (%d delta, %d new, %d carried unchanged)" % (len(synth), len(delta), len(new), len(untouched)))
@@ -713,11 +719,13 @@ def main():
     p = sp.add_parser("watch"); p.add_argument("state"); p.add_argument("cultures"); p.add_argument("register"); p.add_argument("outdir"); p.add_argument("--date", required=True)
     p = sp.add_parser("regjoin"); p.add_argument("adm"); p.add_argument("late"); p.add_argument("out")
     p = sp.add_parser("readmit"); p.add_argument("census"); p.add_argument("register")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import coverage_gate
+    p = sp.add_parser("coverage"); coverage_gate.add_args(p)
     a = ap.parse_args()
     if not a.cmd:
         print(__doc__); return 2
     return {"base": cmd_base, "apply": cmd_apply, "assemble": cmd_apply, "evolve": cmd_evolve, "depart": cmd_depart, "verify": cmd_verify, "strip": cmd_strip,
-            "watch": cmd_watch, "readmit": cmd_readmit, "regjoin": cmd_regjoin}[a.cmd](a)
+            "watch": cmd_watch, "readmit": cmd_readmit, "regjoin": cmd_regjoin, "coverage": coverage_gate.run}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -24,8 +24,26 @@ Writes to outdir:
   undo_ops.json       update_values ops [{range, values}] setting Status "undone" on the undone rules
                       (needs --rules-tab for the row numbers; undone rules not found there are listed in chris_answers)
 Prints "REPLY OK: a answers, r rules, u undo, x unparsed". Exit 2 on bad input.
+
+28.11.2026 (Chris, decision D): a RULE: line binds at once (Status "active"); a rule the run draws from a plain answer
+starts "proposed" (addrule), is listed by recon.py under RULES LEARNED with "binds tomorrow unless you reply undo", and is
+promoted to "active" by `promote` once it has gone out in one email without an undo. Only active rules bind.
+
+Other commands:
+  recon_reply.py prev <recon_prev.txt> <out recon_prev.json>
+      yesterday's sent ID Reconciliation body -> {"date", "need": [{n, key, text}], "learned": [{n, text}]}: lines
+      "N. text [kXXXXXXXX]" under NEEDS YOU (wrapped lines joined); an item without a key gets
+      key = "k" + sha1(text)[:8]; "L<No>. text (...)" lines under RULES LEARNED. Prints "PREV OK: n items, m learned".
+  recon_reply.py addrule <outdir> --date YYYY-MM-DD --from <item key> [--rules-tab <tab json>] "<rule text>"
+      appends a row to outdir/rule_rows.json with Status "proposed" (No continues after the tab and the file).
+  recon_reply.py promote <outdir> --date YYYY-MM-DD --rules-tab <tab json> [--answers outdir/chris_answers.json]
+                 [--min-age-days 1]
+      proposed rules dated at least --min-age-days before today (i.e. shown in at least one reconciliation email)
+      and not undone (tab Status, or an undo in today's reply) -> outdir/promote_ops.json (update_values on column E)
+      and outdir/active_rules.txt ("L<No> | rule | from", every rule that binds today). Prints "PROMOTE OK: ...".
+  active_rules(path) (python) -> the active rules of a 'Learned Rules' tab read (list of {n, row, date, text, from}).
 """
-import argparse, datetime as dt, json, os, re, sys
+import argparse, datetime as dt, hashlib, json, os, re, sys
 
 NUM = re.compile(r"^\s*\(?(L?\d{1,3})\s*(?::\s*|[.)]\s+|\s+-\s+|\s+(?=undo\b))(.*)$", re.I)
 RULE = re.compile(r"^\s*rule\s*:\s*(.*\S)\s*$", re.I)
@@ -132,7 +150,142 @@ def parse(text, items, learned_nums):
     return answers, rules, list(dict.fromkeys(undo)), unparsed
 
 
+def _day(v):
+    v = ("" if v is None else str(v)).strip().lstrip("'").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", v)
+    if m:
+        return v
+    m = re.fullmatch(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2}|\d{4})", v)
+    if not m:
+        return ""
+    y = int(m.group(3)); y += 2000 if y < 100 else 0
+    try:
+        return dt.date(y, int(m.group(2)), int(m.group(1))).isoformat()
+    except ValueError:
+        return ""
+
+
+def all_rules(path, extra_rows=None):
+    """Every rule of a 'Learned Rules' tab read (plus rows not yet written, e.g. out/rule_rows.json):
+    [{n, row, date, text, from, status}]; row = sheet row number (None for a row not yet in the sheet)."""
+    out = []
+    for row, r in tab_rows(path, "No"):
+        if r[2]:
+            out.append({"n": "L" + r[0].upper().lstrip("L"), "row": row, "date": _day(r[1]), "text": r[2], "from": r[3],
+                        "status": (r[4] or "active").lower()})
+    for r in extra_rows or []:
+        r = [("" if c is None else str(c)).strip().lstrip("'") for c in r] + [""] * 6
+        if r[2]:
+            out.append({"n": "L" + r[0].upper().lstrip("L"), "row": None, "date": _day(r[1]), "text": r[2], "from": r[3],
+                        "status": (r[4] or "active").lower()})
+    return out
+
+
+def active_rules(path, extra_rows=None):
+    """Rules that bind: Status active (or empty). A proposed rule binds only once promoted."""
+    return [r for r in all_rules(path, extra_rows) if r["status"] == "active"]
+
+
+def parse_prev(text):
+    """Sent ID Reconciliation body -> {"date", "need": [{n, key, text}], "learned": [{n, text}]}."""
+    sec, need, learned, date = None, [], [], ""
+    m = re.search(r"ID Reconciliation (\d\d)\.(\d\d)\.(\d{4})", text or "")
+    if m:
+        date = "%s-%s-%s" % (m.group(3), m.group(2), m.group(1))
+    for raw in (text or "").replace("\r\n", "\n").split("\n"):
+        ln = raw.strip()
+        if re.match(r"^NEEDS YOU\b", ln):
+            sec = "need"; continue
+        if re.match(r"^RULES LEARNED\b", ln):
+            sec = "learned"; continue
+        if re.match(r"^(SETTLED BY THE RUN|CHECKED, IN AGREEMENT|NOT CHECKED TODAY|HOW TO ANSWER)\b", ln):
+            sec = None; continue
+        if not ln:
+            continue
+        if sec == "need":
+            mm = re.match(r"^(\d{1,3})\.\s+(.*)$", ln)
+            if mm:
+                need.append({"n": int(mm.group(1)), "text": mm.group(2)})
+            elif need and ln.lower() != "none":
+                need[-1]["text"] += " " + ln          # a line wrapped by the mail client
+        elif sec == "learned":
+            mm = re.match(r"^(L\d+)\.\s+(.*)$", ln, re.I)
+            if mm:
+                learned.append({"n": mm.group(1).upper(), "text": mm.group(2)})
+    for x in need:
+        k = KEY.search(x["text"])
+        if k:
+            x["key"] = k.group(1); x["text"] = x["text"][:k.start()].rstrip()
+        else:
+            x["key"] = "k" + hashlib.sha1(x["text"].strip().encode("utf-8")).hexdigest()[:8]
+    return {"date": date, "need": [{"n": x["n"], "key": x["key"], "text": x["text"]} for x in need], "learned": learned}
+
+
+def cmd_prev(argv):
+    ap = argparse.ArgumentParser(prog="recon_reply.py prev"); ap.add_argument("txt"); ap.add_argument("out")
+    a = ap.parse_args(argv)
+    t = open(a.txt, encoding="utf-8", errors="ignore").read() if os.path.exists(a.txt) else ""
+    o = parse_prev(t)
+    json.dump(o, open(a.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("PREV OK: %d items, %d learned (%d without a key, keyed by text)" % (
+        len(o["need"]), len(o["learned"]), sum(1 for x in o["need"] if not re.search(r"\[%s\]" % x["key"], t))))
+    return 0
+
+
+def _next_no(tab, rows):
+    nums = [int(r["n"][1:]) for r in all_rules(tab) if re.fullmatch(r"L\d+", r["n"])]
+    nums += [int(str(r[0]).lstrip("L")) for r in rows if re.fullmatch(r"L?\d+", str(r[0]))]
+    return max(nums or [0]) + 1
+
+
+def cmd_addrule(argv):
+    ap = argparse.ArgumentParser(prog="recon_reply.py addrule"); ap.add_argument("outdir"); ap.add_argument("text")
+    ap.add_argument("--date", required=True); ap.add_argument("--from", dest="src", required=True); ap.add_argument("--rules-tab")
+    a = ap.parse_args(argv)
+    p = os.path.join(a.outdir, "rule_rows.json")
+    rows = json.load(open(p, encoding="utf-8")) if os.path.exists(p) else []
+    n = _next_no(a.rules_tab, rows)
+    rows.append([n, "'" + dt.date.fromisoformat(a.date).strftime("%d/%m/%y"), a.text.strip(), a.src, "proposed", ""])
+    os.makedirs(a.outdir, exist_ok=True)
+    json.dump(rows, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("ADDRULE OK: L%d proposed (binds after one email without undo)" % n)
+    return 0
+
+
+def cmd_promote(argv):
+    ap = argparse.ArgumentParser(prog="recon_reply.py promote"); ap.add_argument("outdir")
+    ap.add_argument("--date", required=True); ap.add_argument("--rules-tab"); ap.add_argument("--answers")
+    ap.add_argument("--min-age-days", type=int, default=1)
+    a = ap.parse_args(argv)
+    cut = (dt.date.fromisoformat(a.date) - dt.timedelta(days=a.min_age_days)).isoformat()
+    undo = set()
+    if a.answers and os.path.exists(a.answers):
+        undo = set(json.load(open(a.answers, encoding="utf-8")).get("undo") or [])
+    rules = all_rules(a.rules_tab)
+    prom, wait, ops = [], [], []
+    for r in rules:
+        if r["status"] != "proposed":
+            continue
+        if r["n"] in undo:
+            continue
+        if r["date"] and r["date"] <= cut and r["row"]:
+            prom.append(r); r["status"] = "active"
+            ops.append({"range": "'Learned Rules'!E%d" % r["row"], "values": [["active"]]})
+        else:
+            wait.append(r)
+    os.makedirs(a.outdir, exist_ok=True)
+    json.dump(ops, open(os.path.join(a.outdir, "promote_ops.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    act = [r for r in rules if r["status"] == "active" and r["n"] not in undo]
+    open(os.path.join(a.outdir, "active_rules.txt"), "w", encoding="utf-8").write(
+        "".join("%s | %s | %s\n" % (r["n"], r["text"], r["from"] or "RULE") for r in act))
+    print("PROMOTE OK: %d promoted to active, %d still proposed, %d undone today, %d active rule(s) bind today"
+          % (len(prom), len(wait), len([r for r in rules if r["n"] in undo]), len(act)))
+    return 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("prev", "addrule", "promote"):
+        return {"prev": cmd_prev, "addrule": cmd_addrule, "promote": cmd_promote}[sys.argv[1]](sys.argv[2:])
     ap = argparse.ArgumentParser()
     ap.add_argument("reply"); ap.add_argument("recon"); ap.add_argument("outdir")
     ap.add_argument("--date", required=True)
@@ -150,7 +303,7 @@ def main():
         x = x if isinstance(x, dict) else {"n": i, "key": "", "text": x}
         items[int(x.get("n") or i)] = {"n": int(x.get("n") or i), "key": x.get("key", ""), "text": x.get("text", "")}
     rules_tab = tab_rows(a.rules_tab, "No")
-    active = {"L" + r[0].upper().lstrip("L"): row for row, r in rules_tab if r[0] and r[4].lower() in ("", "active")}
+    active = {"L" + r[0].upper().lstrip("L"): row for row, r in rules_tab if r[0] and r[4].lower() in ("", "active", "proposed")}
     learned_nums = set(active) | {r.get("n", "") for r in rec.get("learned") or []}
     answers, rules, undo, unparsed = parse(text, items, learned_nums)
 

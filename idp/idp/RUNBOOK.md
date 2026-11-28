@@ -4,6 +4,108 @@ Changed 08.09.2026 after a morning that pushed ~1.1 MB of text through the model
 almost all of it mechanical copying. Changed again 14.09.2026: handout as HTML email
 body (no attachment ever again), compact recap, delta baseline = last SENT delta.
 
+## Stage commands (28.11.2026): what the run executes
+
+Since 28.11.2026 the daily run no longer types about forty commands by hand. The agent keeps every
+MCP read and write (Gmail, Drive, Sheets) and the judgment (`in/roster.txt`, `synth_delta.py`,
+`out/roster_out.txt`, the replies). Everything local runs through three stage commands, from `/tmp/idp`:
+
+```
+T=/tmp/idp/toolkit/idp/idp
+python3 $T/run.py prep  --date YYYY-MM-DD [--as-missing] [--allow-orphans]
+python3 $T/run.py build --date YYYY-MM-DD --long-date "28 November 2026" [--coverage-warn]
+python3 $T/run.py post  --date YYYY-MM-DD
+```
+
+Each step prints one line (`  <step>: <result>`), its full output goes to `out/stage_logs/`. The first
+failed gate prints `STAGE FAIL: <step>: <reason>` and exits 1: fix the input it names and run the
+stage again (every stage can be re-run). A finished stage ends with `STAGE OK: <stage> <date>`.
+
+**prep** (after the morning gather). Inputs in `in/`: `floors/icu/cardio/neuro.json` (or `wards.json`),
+`ams_spill.json`, `ams2_spill.json`, `edits_dl/`, `state.json`, `reg_Register.json` + `reg_History_*.json`,
+`roster.txt`, `as_today.json` (or `--as-missing`), `as_yday.json`, `last_delta_sent.txt` (dd.mm.yyyy),
+`email_today.txt`, `service_list.json`, `cultures.txt`, `cx_archive.json`, `reg_Verification.json`,
+`feed_now/` (feed tabs, `review.json`, `rules.json`, `answered.json`), `recon_prev.txt`, `recon_reply.txt`,
+`roster_yday.txt`. Steps: feed snapshot (`in/feed_now` copied to `in/feed_before` before any feed
+write), parse_wards, parse_ams x2 + merge, edits collect, state_merge --find (report only), regjoin2,
+match.py, `out/day_updates.txt` and `out/app_handoffs.txt`, cultures.py, idp10 base, idp11 vqueue
+(written to `out/vqueue.txt`), idp11 review, `recon_reply.py prev` (builds `in/recon_prev.json` from
+`in/recon_prev.txt`; an item without a key gets `"k" + sha1(text)[:8]`), recon_reply.py (when the reply
+is not empty), `recon_reply.py promote` (writes `out/promote_ops.json` and `in/active_rules.txt`, the
+rules that bind today's synthesis), svccheck.
+
+**build** (after `synth_delta.py` and `out/roster_out.txt`). idp10 apply (no "carried unchanged"),
+validate_synth (`0 errors`), idp10 evolve (`0 unexplained`), the coverage gate (below), id_list.py +
+checks_R idlist/text, build.py (gate on `PREFLIGHT OK` and `BUILD OK` on its own stdout, not on
+`run_status.txt`), recap_html.py, wa_handout.py (`out/census_wa.json` when present), checks_R text on
+`recap_email.txt/.html`, `wa_handout.txt`, `delta2.html/.txt`, `id_list_email.txt`. The HTML handout
+(`out/handout.html`, `build_html.py`) is no longer built: it has not been emailed since 23.10.2026 and
+nothing read it. The reconciliation is not built here.
+
+**post** (after the sends; with `out/feed/replies.json`, `out/review_replies.json` and "Applied as" filled
+in `out/answered_rows.json`). ams_blocks, idp11 final, idp10 watch, backfill key (`in/bfq.json` when the
+key is missing), idp11 feed (pre-write state from `in/feed_before`), idp11 schema, checkreg, vwrite,
+reviewreply, drive_state patch (or a full base on PATCH LARGE or a cold start), recon.py with every input
+(`--feed-dir in/feed_before`, `--resolved` and `--learned` = this morning's tabs plus today's rows,
+`--evolution`, `--review`), checks_R text `out/recon.txt`. It then writes **`out/post_ops/`**: the Drive and
+Sheets writes the agent performs, in order, one file each (`NN_<what>.json`: a list of `{range, values}`
+update_values ops, or for `state_parts` a list of `{title, path, bytes}` create_file entries), and
+`INDEX.txt`:
+
+```
+POST OPS <date>: perform in this order, after every send. ...
+Targets: feed = IDP Feed <id>; register = IDP Discharge Register <id>; state = IDP_State folder <id>
+chkw = after op k of file NN_x.json: get_values on the op's range, save it as in/readback/NN_k.json, then
+python3 $T/run.py chkw out/post_ops/NN_x.json k in/readback/NN_k.json must print CHKW MATCH ...
+NN | file | target | calls | verify
+01 | 01_feed_ops.json | IDP Feed <id> | 4 call(s) | chkw; after the last op re-read the six tabs ... feedcheck: FEED MATCH
+02 | 02_feed_schema.json | IDP Feed <id> | 2 call(s) | chkw
+...
+NN | NN_state_parts.json | IDP_State folder <id> | 4 file(s) | create_file ...; fileSize == bytes; drive part MATCH
+```
+
+Order: feed_ops, feed_schema, register_schema, verification_rows, verification_replies, review_replies,
+answered_rows, rule_rows, undo_ops, rule_promote, state_parts (files with no op are left out). The ids
+come from `in/targets.json` (`{"feed": ..., "register": ..., "state_folder": ...}`, written by the agent,
+never committed). `run.py op <file> <k>` prints op k. The per-op files (`out/feed/ops.json`,
+`vrows_ops.json`, ...) are still written.
+
+**Membership (rule B, Chris 28.11.2026, match.py).** The service is today's roster plus everyone on
+yesterday's list. A patient leaves ONLY on (1) a fellow removal (service list `removed[]`, unless the
+fellows put them back later), (2) an update email saying signed off or signed out, (3) a newer full
+roster block (3 or more roster lines) in an update email that omits them (newer than the service list's
+`last_edit_at`; an email may carry a `=== <ISO time>` line, else it counts as received today). Absence
+from every source never removes: `possibly gone: <pid> absent from AS list, handoffs and emails` (kept on).
+A removed patient re-enters when a source dated after the removal names them for ID: standing therapy
+new on the AS list, a handoff Cs ID / UC ID row dated after the removal, or an update email naming them
+(not a sign-off line): `re-entered: <pid> <source>`. All of these are in `out/flags.txt`.
+
+**AS list deadline (rule C).** No AS list by 08:00 Beirut: `run.py prep --as-missing`. match.py takes
+rooms from `in/as_yday.json` (or the state's last list), changes no membership from it and computes no
+delta; build.py renders the one-line Delta Report `AS list dd.mm.yyyy not received by 08:00; delta follows
+when it arrives`, and the state keeps `as_missing_days`, so the next run's delta is taken against the
+last list consumed and names the missed day. A list that arrives later the same morning: run prep again
+without the flag.
+
+**Learned rules (decision D).** A `RULE:` line binds at once (Status `active`). A rule drawn from a
+plain answer is added with `recon_reply.py addrule out --date D --from <item key> "<rule>"` as `proposed`;
+recon.py lists it under RULES LEARNED with "binds tomorrow unless you reply undo"; the next prep promotes
+it (`out/promote_ops.json`) unless the reply undid it. Only active rules bind: `in/active_rules.txt`
+(python: `recon_reply.active_rules(rules.json)`).
+
+**Coverage gate (decision E, review item 11).** `coverage_gate.py` (also `idp10.py coverage`): every
+dated fragment (today or yesterday) of the ward-doc lines in `out/day_updates.txt` and of each app
+write-up, and every final culture row of the current admission (negatives when they are 3 days old or
+newer), must show in a rendered field of the patient's synth entry or WA lines, or be waived in
+`synth_delta.py` with `WAIVED = {pid: [{"item": <source text or a distinctive part>, "reason": ...}]}`
+(apply carries it into synth.py). Matching is tolerant: the date (plus or minus one day) and one key noun
+(specimen, organism or its abbreviation, drug stem, imaging, procedure, event), or half the key nouns in
+one item. Misses go to `out/coverage_gate.txt`; the build stops on any miss. `--coverage-warn` turns
+it into a warning (use it only when a miss is a toolkit fault, and say so in the closing note).
+
+The sections below are the older procedure and history; where they disagree with this section, this
+section wins.
+
 ## Emails (up to four, in this order)
 
 1. **AS List Delta Report** - `out/delta2.html` as htmlBody, `out/delta2.txt` as body.

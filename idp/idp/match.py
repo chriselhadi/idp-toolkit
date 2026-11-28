@@ -3,7 +3,15 @@
 
 Usage: match.py <state.json|MISSING> <as_today.json|MISSING> <wards.json|MISSING> <ams.json|MISSING> <outdir>
                 --date DD.MM.YYYY [--roster roster.txt] [--as-yday as_yday.json]
+                [--update-text email.txt service_list.json] [--as-missing] [--last-delta-sent DD.MM.YYYY]
 Writes outdir/census.json, delta.json, flags.txt, packets.txt, pending_check.txt. Prints counts only.
+
+Membership (rule B, Chris 28.11.2026): the roster plus yesterday's list; a patient leaves only on a fellow removal
+(service list removed[]), a signed off / signed out line in an update email, or a newer full roster block in an update
+email that omits them ("removed: ..." flags). Absence from every source only flags "possibly gone: <pid> ...". A removed
+patient re-enters on an AS list start, a handoff Cs ID / UC ID row or an update email dated after the removal
+("re-entered: <pid> <source>"). --as-missing (rule C): no AS list by 08:00, rooms from --as-yday, no delta, the state
+keeps as_missing_days for the next delta.
 """
 import sys, os, re, json, argparse, datetime as dt
 sys.path.insert(0, os.path.dirname(__file__))
@@ -103,6 +111,12 @@ class Registry:
 
 def row_is_fresh(row, today, days=4):
     """True when the newest dd/mm date in a handoff row is within `days` of today."""
+    best = row_newest(row, today)
+    return best is not None and (dt.date.fromisoformat(today) - best).days <= days
+
+
+def row_newest(row, today):
+    """Newest dd/mm date written in a handoff row (not more than 2 days ahead of today), else None."""
     t0 = dt.date.fromisoformat(today); best = None
     txt = (row.get("text") or "") + " " + " ".join(row.get("dated_lines") or [])
     for d, m in re.findall(r"\b(\d{1,2})[./](\d{1,2})\b", txt):
@@ -113,7 +127,7 @@ def row_is_fresh(row, today, days=4):
         if x > t0 + dt.timedelta(days=2):
             continue
         best = x if best is None or x > best else best
-    return best is not None and (t0 - best).days <= days
+    return best
 
 
 _AGE_RE = re.compile(r"\b(\d{1,3})\s*(?:yo\b|y/o\b|yrs?\b|years?[- ]old\b|year[- ]old\b|[MF]\b)", re.I)
@@ -201,6 +215,133 @@ def missed_dates(yday, today):
     return [(a + dt.timedelta(days=i)).isoformat() for i in range(1, (b - a).days)]
 
 
+# ---- Membership sources (rule B, Chris 28.11.2026) ----
+SIGNOFF = re.compile(r"\bsign(?:ed|ing|s)?[\s-]*(?:off|out)\b", re.I)
+EMAIL_SEP = re.compile(r"^===\s*(?:email\s*)?(\d{4}-\d{2}-\d{2}(?:[T ][\d:.]+)?(?:Z|[+-]\d\d:?\d\d)?)\s*(?:===)?\s*$", re.I)
+BLOCK_MIN = 3   # roster lines that make a full roster block
+
+
+def load_updates(paths, today):
+    """--update-text files -> (service list dict or None, [{"ts", "text"}] update emails). A text file may hold several
+    emails, each starting with a line "=== <ISO time>"; text without such a line is an email received today."""
+    svc, emails = None, []
+    for f in paths or []:
+        try:
+            raw = open(f, encoding="utf-8", errors="ignore").read()
+        except OSError:
+            continue
+        if f.endswith(".json"):
+            try:
+                o = json.loads(raw)
+                if isinstance(o, dict) and "patients" in o:
+                    svc = o
+            except Exception:
+                pass
+            continue
+        cur = {"ts": today + "T00:00:00", "text": []}
+        for ln in raw.splitlines():
+            m = EMAIL_SEP.match(ln.strip())
+            if m:
+                if any(x.strip() for x in cur["text"]):
+                    emails.append(cur)
+                cur = {"ts": m.group(1).replace(" ", "T"), "text": []}
+                continue
+            cur["text"].append(ln)
+        if any(x.strip() for x in cur["text"]):
+            emails.append(cur)
+    for e in emails:
+        e["text"] = "\n".join(e["text"])
+    emails.sort(key=lambda e: e["ts"])
+    return svc, emails
+
+
+def _parse_roster_line(s):
+    try:
+        from email_roster import parse_line
+    except Exception:
+        return None
+    return parse_line(s)
+
+
+def roster_block(text):
+    """Roster lines ('<Room> <Name> [(new)|(UC)] <initials>') in an email; a block when there are at least BLOCK_MIN."""
+    out = [p for p in (_parse_roster_line(l) for l in (text or "").splitlines()) if p]
+    return out if len(out) >= BLOCK_MIN else []
+
+
+def latest_block(emails, svc_edit):
+    """The roster block of the latest email that carries one and is newer than the service list's last edit."""
+    for e in reversed(emails or []):
+        b = roster_block(e["text"])
+        if b and (not svc_edit or e["ts"] > svc_edit[:19]):
+            return {"ts": e["ts"], "lines": b}
+    return None
+
+
+def _surname(name):
+    toks = [t for t in re.sub(r"[^a-z ]+", " ", (name or "").lower()).split() if len(t) >= 3]
+    return toks[-1] if toks else ""
+
+
+def names_line(line, name, mrn=None):
+    """True when an email line names the patient: MRN, or surname plus another name token (spelling variants allowed)."""
+    low = line.lower()
+    if mrn and re.search(r"(?<!\d)%s(?!\d)" % re.escape(str(mrn)), low):
+        return True
+    words = re.sub(r"[^a-z ]+", " ", low).split()
+    toks = [t for t in re.sub(r"[^a-z ]+", " ", (name or "").lower()).split() if len(t) >= 3]
+    if len(toks) < 2:
+        return False
+    from difflib import SequenceMatcher
+    def has(t):
+        return any(w == t or (len(t) >= 4 and len(w) >= 4 and SequenceMatcher(None, w, t).ratio() >= 0.8) for w in words)
+    return has(toks[-1]) and any(has(t) for t in toks[:-1])
+
+
+def named_for_id(text, name, mrn=None):
+    """An email line that names the patient and is not a sign-off line, else None."""
+    for ln in (text or "").splitlines():
+        if ln.strip() and not SIGNOFF.search(ln) and names_line(ln, name, mrn):
+            return ln
+    return None
+
+
+def parse_line_room(line):
+    p = _parse_roster_line(line or "")
+    if p and p.get("room") and p["room"] != "?":
+        room, grp, _ = parse_bed(p["room"])
+        return room, grp
+    return None
+
+
+def _svc_match(q, rec, pid):
+    if q.get("pid") and q["pid"] == pid:
+        return True
+    if q.get("mrn") and rec.get("mrn") and str(q["mrn"]) == str(rec["mrn"]):
+        return True
+    return max([name_sim(q.get("name") or "", a) for a in [rec.get("name", "")] + rec.get("aliases", [])] or [0]) >= 0.67
+
+
+def removal_cause(rec, pid, svc, emails, block):
+    """Why a known patient leaves the ID list today, or None (rule B): (1) the fellows removed them in the service list
+    (and did not put them back later), (2) an update email says signed off / signed out, (3) a newer full roster block
+    in an update email omits them."""
+    if svc:
+        for q in svc.get("removed") or []:
+            if _svc_match(q, rec, pid):
+                back = [p for p in svc.get("patients") or [] if _svc_match(p, rec, pid)
+                        and (p.get("updated_at") or "") > (q.get("removed_at") or "")]
+                if not back:
+                    return "removed by a fellow in the service list (%s)" % ((q.get("removed_at") or "")[:10] or "no date")
+    for e in emails or []:
+        for ln in e["text"].splitlines():
+            if SIGNOFF.search(ln) and names_line(ln, rec.get("name") or "", rec.get("mrn")):
+                return "update email %s: %s" % (e["ts"][:10], "signed out" if re.search(r"out\b", SIGNOFF.search(ln).group(0), re.I) else "signed off")
+    if block and not any(name_sim(l["name"], a) >= 0.5 for l in block["lines"] for a in [rec.get("name", "")] + rec.get("aliases", [])):
+        return "omitted from the full roster block of the update email %s" % block["ts"][:10]
+    return None
+
+
 def delta_baseline(state, last_delta_sent):
     """The AS list the delta is taken against.
 
@@ -269,6 +410,8 @@ def main():
     ap.add_argument("--date", required=True); ap.add_argument("--roster"); ap.add_argument("--allow-orphans", action="store_true",
                     help="proceed past the orphan guard once the ward parse is confirmed sound")
     ap.add_argument("--as-yday")
+    ap.add_argument("--as-missing", action="store_true", help="no AS list by 08:00 Beirut (rule C): rooms from --as-yday "
+                    "(or the state's last list), no membership change from it, no delta; the state records the missed day")
     ap.add_argument("--update-text", nargs="*", default=[], help="update emails / service list read today: a new-on-list patient named "
                     "or MRN-cited in any of them is known to the service and is not tagged NEW TO SERVICE (Chris, 11.11.2026)")
     ap.add_argument("--orphans-confirmed", help="file, one name per line: orphans confirmed absent from every ward doc")  # OVERLAY_6 4q
@@ -282,6 +425,8 @@ def main():
     if cold:
         state = {"version": 2, "date": None, "next_pid": 1, "patients": {}, "as_snapshot": None, "observations": [], "roster_last": None}
     as_today = load_opt(a.as_today); wards = load_opt(a.wards); ams = load_opt(a.ams)
+    if a.as_missing:
+        as_today = None
     as_yday = load_opt(a.as_yday) or delta_baseline(state, a.last_delta_sent)
     roster = parse_roster(a.roster) if a.roster and os.path.exists(a.roster) else None
     reg = Registry(state)
@@ -315,40 +460,94 @@ def main():
 
     PRIORITY = {"as": 0, "roster": 1, "ward": 2, "prior": 3, None: 9}
 
-    # 1. Membership: roster (if sent) is the service; else yesterday's actives carry forward.
+    # 1. Membership (Chris, 28.11.2026, rule B). The service = today's roster (the service list as the agent wrote
+    # it) plus every patient on yesterday's list (carry forward). A patient leaves ONLY on (1) a fellow removal
+    # (service list removed[]), (2) an update email saying signed off / signed out, (3) a newer full roster block in
+    # an update email that omits them. Absence from every source alone never removes (flag "possibly gone", below).
+    svc, emails = load_updates(a.update_text, today)
+    blk_mail = latest_block(emails, (svc or {}).get("last_edit_at"))
+    prior_active = [pid for pid, rec in reg.p.items() if rec.get("active")]
+    cand = []   # (pid, room, group, prov, fellow, tags)
     if roster:
         for r in roster:
             pid, how = reg.find(r["name"])
             if not pid:
                 pid = reg.add(r["name"], None, today)
-            touch(pid, r["name"], None, r["room"], r["group"], "roster", r["fellow"], r["tags"] + (["new"] if "new" in r["tags"] else []))
-        on_list = set(census)
-        for pid, rec in reg.p.items():
-            if rec.get("active") and pid not in on_list and rec.get("last_seen") != today:
-                rec["active"] = False; rec["archived"] = today; rec["archived_reason"] = "not on today's ID Active Patients list"
-                archived_today.append("%s (%s)" % (rec["name"], pid))
+            cand.append((pid, r["name"], None, r["room"], r["group"], "roster", r["fellow"], r["tags"]))
         state["roster_last"] = {"date": today, "lines": [r["raw"] for r in roster]}
-    else:
-        for pid, rec in reg.p.items():
-            if rec.get("active"):
+    on_roster = {c[0] for c in cand}
+    for pid in prior_active:
+        if pid not in on_roster:
+            rec = reg.p[pid]; prev = rec.get("synth", {})
+            cand.append((pid, rec["name"], rec.get("mrn"), prev.get("_room"), prev.get("_group"), "prior",
+                         prev.get("_fellow", ""), prev.get("_tags", [])))
+    if not roster and not cold:
+        flags.append("no ID Active Patients email today: yesterday's list carried forward as today's list (%d patients)" % len(cand))
+    removed_today = set()
+    for (pid, name, mrn, room, grp, prov, fellow, tags) in cand:
+        rec = reg.p[pid]
+        known = (rec.get("first_seen") or today) < today
+        cause = removal_cause(rec, pid, svc, emails, blk_mail) if known else None
+        if cause:
+            rec["active"] = False; rec["archived"] = today; rec["archived_reason"] = cause
+            removed_today.add(pid)
+            archived_today.append("%s (%s)" % (rec["name"], pid))
+            flags.append("removed: %s (%s): %s" % (rec["name"], pid, cause))
+            continue
+        if roster and prov == "prior":
+            flags.append("kept: %s (%s) is not on today's roster but no removal source names them (rule B)" % (rec["name"], pid))
+        touch(pid, name, mrn, room, grp, prov, fellow, list(tags))
+    # A removed patient re-enters (no longer frozen) when a source dated after the removal names them for ID:
+    # an update email here, the AS list and the handoff Cs ID / UC ID rows below.
+    for pid, rec in reg.p.items():
+        if pid in census or rec.get("active") or not rec.get("archived") or pid in removed_today:
+            continue
+        if rec["archived"] >= today:
+            continue
+        for em in emails:
+            if em["ts"][:10] <= rec["archived"]:
+                continue
+            hit = named_for_id(em["text"], rec.get("name") or "", rec.get("mrn"))
+            if hit:
                 prev = rec.get("synth", {})
-                touch(pid, rec["name"], rec.get("mrn"), prev.get("_room"), prev.get("_group"), "prior", prev.get("_fellow", ""), prev.get("_tags", []))
-        if not cold:
-            flags.append("no ID Active Patients email today: yesterday's list carried forward as today's list (%d patients)" % len(census))
+                pr = parse_line_room(hit) or (prev.get("_room"), prev.get("_group"))
+                rec["archived"] = None; rec["archived_reason"] = ""
+                touch(pid, rec["name"], rec.get("mrn"), pr[0], pr[1], "roster" if pr[0] else "prior", prev.get("_fellow", ""), prev.get("_tags", []))
+                census[pid]["reentered"] = "update email"
+                flags.append("re-entered: %s update email %s" % (pid, em["ts"][:10]))
+                break
 
     # 2. AS list: rooms first; new names enter as new consults (standing therapy or ward-doc match); ONCE-only names are shots.
     single_dose = []
     as_offlist = []  # OVERLAY_8 D8
     Y_MRNS = {q.get("mrn") for q in ((as_yday or {}).get("patients") or []) if not q.get("once_only")}  # 11.11.2026: once-only yesterday = new today
-    if as_today:
+    reentered = {}
+    if a.as_missing:
+        # Rule C (Chris, 28.11.2026): no AS list by 08:00 Beirut. Yesterday's list gives rooms only: no membership
+        # change and no delta from it (the delta follows when today's list arrives).
+        for p in ((as_yday or {}).get("patients") or []):
+            pid, how = reg.find(p["name"], p.get("mrn"))
+            if pid and pid in census and p.get("room") and p["room"] != "?":
+                rec = census[pid]
+                if rec["room"] in (None, "?") or PRIORITY["as"] < PRIORITY[rec["room_source"]]:
+                    rec["room"], rec["group"], rec["room_source"] = p["room"], p.get("group"), "as"
+                rec["as_age"] = p.get("age"); rec["as_admission"] = p.get("admission_date")
+        flags.append("AS list %s not received by 08:00: rooms from the last list (%s), no delta today"
+                     % (dt.date.fromisoformat(today).strftime("%d.%m.%Y"), (as_yday or {}).get("list_date") or "none"))
+    elif as_today:
         for p in as_today["patients"]:
             pid, how = reg.find(p["name"], p["mrn"])
             newly = bool(Y_MRNS) and bool(p.get("mrn")) and p["mrn"] not in Y_MRNS
+            if newly and not p.get("once_only") and pid in removed_today:
+                flags.append("removed today (%s) and new on today's AS list: kept off, re-enters when a later source names them" % pid)
+                continue
             if newly and not p.get("once_only"):  # OVERLAY_R
                 if not pid:
                     pid = reg.add(p["name"], p["mrn"], today)
-                else:
+                elif reg.p[pid].get("archived") and pid not in census:
                     reg.p[pid]["archived"] = None; reg.p[pid]["archived_reason"] = ""
+                    reentered[pid] = "AS list standing therapy new since removal"
+                    flags.append("re-entered: %s AS list standing therapy new since removal" % pid)
                 flags.append("new on today's AS list, added (%s)" % pid)
             elif not pid and "paeds" in p.get("flags", []):
                 continue  # paeds never enter the adult census from the AS list; listed in the Delta Report instead
@@ -376,6 +575,8 @@ def main():
             elif not reg.p[pid].get("active") and roster and (not newly or p.get("once_only")):  # OVERLAY_10 once-only never re-enters
                 continue  # came off Chris's list today: the AS list does not put them back
             rec = touch(pid, p["name"], p["mrn"], p["room"], p["group"], "as", "", ["paeds"] if "paeds" in p.get("flags", []) else [])
+            if pid in reentered:
+                rec["reentered"] = reentered[pid]
             rec["as_orders"] = p["orders"]; rec["as_standing"] = p["standing_drugs"]; rec["as_once_only"] = p.get("once_only", False)
             rec["as_age"] = p.get("age"); rec["as_admission"] = p.get("admission_date"); rec["as_crcl"] = p.get("crcl")
     else:
@@ -413,6 +614,18 @@ def main():
         if pid and pid in census:
             continue
         if pid and reg.p[pid].get("archived"):
+            arc = reg.p[pid]["archived"]
+            nd = row_newest(row, today)
+            if pid not in removed_today and arc < today and nd and nd.isoformat() > arc:
+                # rule B: a Cs ID / UC ID row dated after the removal brings the patient back on the service
+                reg.p[pid]["archived"] = None; reg.p[pid]["archived_reason"] = ""
+                rb = parse_bed(row["room"]) if rr else (None, None, None)
+                rec1 = touch(pid, nm, None, rb[0], rb[1], "ward")
+                rec1["reentered"] = "handoff %s %s row %s" % (row.get("doc"), "UC ID" if row.get("uc_id") else "Cs ID", ddmm(nd.isoformat()))
+                if row.get("uc_id") and "uc" not in rec1["tags"]:
+                    rec1["tags"].append("uc")
+                flags.append("re-entered: %s %s" % (pid, rec1["reentered"]))
+                continue
             if not any(o["pid"] == pid for o in cs_offlist):
                 prev0 = reg.p[pid].get("synth") or {}
                 cs_offlist.append({"pid": pid, "name": reg.p[pid]["name"], "room": row.get("room") or prev0.get("_room") or "?",
@@ -461,6 +674,19 @@ def main():
         s = reg.p[pid].setdefault("synth", {})
         s["_room"], s["_group"], s["_fellow"], s["_tags"] = rec["room"], rec["group"], rec["fellow"], rec["tags"]
 
+    # 3b. Rule B: absence from every source alone never removes; it is reported and the patient stays on.
+    mail_all = "\n".join(e["text"] for e in emails).lower()
+    as_names = [(q.get("mrn"), q.get("name") or "") for q in ((as_today or {}).get("patients") or [])]
+    for pid, rec in census.items():
+        if rec.get("first_seen_today") or reg.p[pid].get("first_seen") == today:
+            continue
+        on_as = bool(rec.get("as_orders")) or any((m and m == rec.get("mrn")) or name_sim(n, rec["name"]) >= 0.67 for m, n in as_names)
+        in_ho = any(row_is_fresh(w, today) for w in rec.get("ward_rows") or [])
+        in_mail = any(names_line(ln, rec["name"], rec.get("mrn")) for ln in mail_all.splitlines() if ln.strip())
+        if not (on_as or in_ho or in_mail):
+            rec["possibly_gone"] = True
+            flags.append("possibly gone: %s absent from AS list, handoffs and emails" % pid)
+
     # 4. Pending continuity check (non-blocking).
     pend_lines = []
     for pid, rec in census.items():
@@ -470,7 +696,20 @@ def main():
                 rec["room"], rec["name"], pd["item"], ddmm(pd.get("since")), age))
 
     # 5. Delta.
-    delta = compute_delta(as_today, as_yday)
+    if a.as_missing:
+        dmy_today = dt.date.fromisoformat(today).strftime("%d.%m.%Y")
+        delta = {"computed": False, "as_missing": True, "missing_date": today,
+                 "last_list": (as_yday or {}).get("list_date"),
+                 "reason": "AS list %s not received by 08:00; delta follows when it arrives" % dmy_today}
+        # the state remembers the day; the next run with a list takes its delta against the last list consumed
+        # (as_snapshot is not advanced without a list) and names the missed days (missed_dates)
+        state["as_missing_days"] = sorted(set(state.get("as_missing_days") or []) | {today})
+    else:
+        delta = compute_delta(as_today, as_yday)
+        if delta.get("computed"):
+            late = [d for d in (state.pop("as_missing_days", None) or []) if d < (delta.get("today_date") or today)]
+            if late:
+                delta["late_days"] = late
     if as_today and not delta["computed"]:
         flags.append("delta_computed=False: %s" % delta["reason"])
 

@@ -3,18 +3,17 @@
 
 Usage: preflight.py <outdir> <today ISO>
 Checks every deliverable the run is about to type into a tool call:
-  - files exist and are non-empty: delta2.html/.txt, handout.html, handout_body.txt,
-    handout_manifest.json, recap_email.txt, state_parts/manifest.json + every part
+  - files exist and are non-empty: delta2.html/.txt, recap_email.txt, state_parts/manifest.json + every part
+    (no HTML handout since 28.11.2026: never emailed, nothing read it)
   - sizes: every single tool-call string under the transcription limits measured 14.09.2026
-    (state part < 25000, recap < 30000, handout html < 60000, delta html < 30000)
+    (state part < 25000, recap < 30000, delta html < 30000)
   - no em/en dash anywhere, no "background:" in any HTML (Gmail deletes it)
   - every state part header carries today's date and the manifest sha256
-  - the handout subject in the manifest carries today's date label
 Prints one PASS/FAIL line per check and "PREFLIGHT OK" at the end.
 """
 import sys, os, json, re, datetime as dt
 
-LIMITS = {"state_part": 25000, "recap_email.txt": 30000, "handout.html": 60000, "delta2.html": 30000,
+LIMITS = {"state_part": 25000, "recap_email.txt": 30000, "delta2.html": 30000,
           "archive_notes.txt": 30000}
 
 
@@ -31,36 +30,18 @@ def main():
         p = os.path.join(out, name)
         return open(p, encoding="utf-8").read() if os.path.exists(p) else None
 
-    for f in ("delta2.html", "delta2.txt", "handout.html", "handout_body.txt", "handout_manifest.json",
-              "recap_email.txt", "state_parts/manifest.json"):
+    for f in ("delta2.html", "delta2.txt", "recap_email.txt", "state_parts/manifest.json"):
         t = rd(f)
         check(bool(t and t.strip()), "%s present and non-empty" % f)
-    try:
-        _nparts = len(json.loads(rd("handout_manifest.json") or "{}").get("parts", []))
-    except Exception:
-        _nparts = 1
     for f, lim in LIMITS.items():
         if f == "state_part":
             continue
-        if f == "handout.html" and _nparts > 1:
-            continue  # split handout: the monolith is never sent; each part is checked below
         t = rd(f)
         if t is None:
             continue
         check("—" not in t and "–" not in t, "%s has no em/en dash" % f)
         if f.endswith(".html"):
             check("background:" not in t, "%s has no background: (Gmail deletes it)" % f)
-    man = rd("handout_manifest.json")
-    if man:
-        m = json.loads(man)
-        label = dt.date.fromisoformat(today).strftime("%d %B %Y")
-        check(m.get("subject", "").endswith(label), "handout subject carries today (%s): %s" % (label, m.get("subject")))
-        h = rd("handout.html") or ""
-        check(label in h, "handout.html carries today's date label")
-        for part in m.get("parts", []):
-            t = rd(part["file"]) or ""
-            check(bool(t) and len(t) < LIMITS["handout.html"], "handout email %s %d chars < %d" % (part["file"], len(t), LIMITS["handout.html"]))
-        print("INFO handout goes as %d email(s): %s" % (len(m.get("parts", [])), "; ".join(p["subject"] for p in m.get("parts", []))))
     sm = rd("state_parts/manifest.json")
     if sm:
         s = json.loads(sm)
