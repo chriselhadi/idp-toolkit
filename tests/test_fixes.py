@@ -264,3 +264,72 @@ fp = os.path.join(W, "feed_rb.json")
 json.dump({"values": [["pid", "MRN"], ["P9001", "'900001"], ["P9002", "900002"]]}, open(fp, "w"))
 ok("idp11_readback_apostrophe", X.raw_values(fp)[1:] == [["P9001", "900001"], ["P9002", "900002"]], str(X.raw_values(fp)))
 print("REGISTER TESTS OK")
+
+# ---------------- 7. Feed Patients "none documented" for Active patients (Chris 28.11.2026) ----------------
+# The AMS app reads an empty cell as unknown/clear: Active rows say "none documented" in the recap cells the synthesis
+# leaves empty; other rows stay as they were. The write, the read-back (feedcheck) and Feed Changes all use the same text.
+sys.path.insert(0, I)
+st, cen = json.load(open(os.path.join(D2, "out", "state_new.json"))), json.load(open(os.path.join(D2, "out", "census.json")))
+fdes = X.build(st, cen, None, {"specimens": []}, "2026-09-07")
+fh = X.TABS["Feed Patients"][0]
+ND = [fh.index(h) for h in ("Steroids", "Lines", "IM", "Not applied", "Pendings", "Conflicts", "ID plan", "Imaging", "Micro recap")]
+act = [r for r in fdes["Feed Patients"] if r[3] == "Active"]
+oth = [r for r in fdes["Feed Patients"] if r[3] != "Active"]
+ok("feed_none_documented_active", act and all(r[i] for r in act for i in ND)
+   and any(r[i] == "none documented" for r in act for i in ND)
+   and any(r[i] not in ("", "none documented") for r in act for i in ND), json.dumps(act)[:600])
+ok("feed_none_documented_not_other_rows", oth and not any(r[i] == "none documented" for r in oth for i in ND), json.dumps(oth)[:600])
+a1 = next(r for r in act if r[0] == "P0001")
+sy1 = st["patients"]["P0001"]["synth"]
+ok("feed_filled_cells_keep_their_text", a1[fh.index("ID plan")] == X.cell(" ; ".join(sy1.get("id_plan") or [])) or not sy1.get("id_plan"),
+   a1[fh.index("ID plan")])
+
+
+def apply_ops(nowdir, ops):
+    """A stand-in for Sheets: write each op's values into the tab files of nowdir as get_values would read them."""
+    files = {t: v[2] for t, v in X.TABS.items()}
+    files.update({"Feed Changes": "changes", "Evolution": "evolution", "Gemini Review": "review"})
+    for o in ops:
+        t, rng = o["range"].split("!")
+        t = t.strip("'")
+        r0, r1 = (int(re.sub(r"[A-Z]", "", x)) for x in rng.split(":"))
+        fp = os.path.join(nowdir, files[t] + ".json")
+        g = json.load(open(fp))["values"] if os.path.exists(fp) else []
+        g += [[] for _ in range(r1 - len(g))]
+        for k, v in enumerate(o["values"]):
+            g[r0 - 1 + k] = [x[1:] if isinstance(x, str) and x.startswith("'") else x for x in v]   # Sheets drops the apostrophe
+        json.dump({"values": g}, open(fp, "w"))
+
+
+fw = os.path.join(W, "feednd"); fnow = os.path.join(fw, "now"); os.makedirs(fnow)
+fargs = [os.path.join(I, "idp11.py"), "feed", os.path.join(D2, "out", "state_new.json"), os.path.join(D2, "out", "census.json"),
+         "MISSING", "MISSING", fnow, os.path.join(fw, "feed"), "--date", "2026-09-07"]
+r = subprocess.run([sys.executable] + fargs, capture_output=True, text=True)
+ok("feed_nd_first_run", r.returncode == 0 and r.stdout.startswith("FEED OPS"), r.stdout + r.stderr[-500:])
+apply_ops(fnow, json.load(open(os.path.join(fw, "feed", "ops.json"))))
+fchk = [sys.executable, os.path.join(I, "idp11.py"), "feedcheck", os.path.join(fw, "feed", "feed_desired.json"), fnow, "--date", "2026-09-07"]
+r = subprocess.run(fchk, capture_output=True, text=True)
+ok("feed_nd_feedcheck_match", r.returncode == 0 and "FEED MATCH" in r.stdout, r.stdout + r.stderr[-500:])
+r = subprocess.run([sys.executable] + fargs, capture_output=True, text=True)
+ops2 = json.load(open(os.path.join(fw, "feed", "ops.json")))
+ok("feed_nd_rerun_no_changes", r.returncode == 0 and "0 change-log row(s)" in r.stdout
+   and not any(o["range"].startswith("'Feed Patients'") or o["range"].startswith("'Feed Changes'") for o in ops2), r.stdout)
+# a sheet written before the change (empty Steroids for an Active patient): the run logs "" -> "none documented" and
+# writes it; a non-active row's empty cell is not touched
+pp = os.path.join(fnow, "patients.json"); pv = json.load(open(pp))
+si = fh.index("Steroids")
+arow = next(k for k, x in enumerate(pv["values"]) if x and x[0] == "P0002")
+assert pv["values"][arow][si] == "none documented"
+pv["values"][arow][si] = ""
+json.dump(pv, open(pp, "w"))
+r = subprocess.run(fchk, capture_output=True, text=True)
+ok("feed_nd_feedcheck_catches_empty", r.returncode == 1 and "MISMATCH Feed Patients P0002" in r.stdout, r.stdout)
+r = subprocess.run([sys.executable] + fargs, capture_output=True, text=True)
+ops3 = json.load(open(os.path.join(fw, "feed", "ops.json")))
+chg = [row for o in ops3 if o["range"].startswith("'Feed Changes'") for row in o["values"]]
+ok("feed_nd_change_logged", r.returncode == 0 and "1 change-log row(s)" in r.stdout and len(chg) == 1
+   and chg[0][1:] == ["P0002", "Feed Patients", "P0002", "Steroids", "", "none documented"], r.stdout + json.dumps(chg))
+apply_ops(fnow, ops3)
+r = subprocess.run(fchk, capture_output=True, text=True)
+ok("feed_nd_feedcheck_after_fix", r.returncode == 0 and "FEED MATCH" in r.stdout, r.stdout)
+print("FEED NONE DOCUMENTED TESTS OK")

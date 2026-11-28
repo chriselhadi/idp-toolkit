@@ -39,7 +39,7 @@ build (after synth_delta.py and out/roster_out.txt are written):
   wa_handout.py (out/census_wa.json when present), checks_R text on every output that is sent. No HTML handout.
 post (after the sends, out/feed/replies.json, out/review_replies.json and out/answered_rows.json "Applied as"):
   ams_blocks, idp11 final, idp10 watch, backfill key, idp11 feed (pre-write state in/feed_before), schema, checkreg,
-  vwrite, reviewreply, drive_state patch, recon.py (every input), checks_R text out/recon.txt; then
+  vwrite, reviewreply, drive_state patch, recon.py (every input; --items out/run_items.txt when present), checks_R text out/recon.txt; then
   out/post_ops/NN_<what>.json and out/post_ops/INDEX.txt: the Drive/Sheets writes in order, their target and how to
   verify each. Targets: in/targets.json {"feed": id, "register": id, "state_folder": id} (kept out of the repo).
 """
@@ -467,6 +467,8 @@ def post(a, S):
                        ("--learned", "out/rules_merged.json")):
         argv += [flag, S.p(*path.split("/"))]
     argv += ["--feed-dir", nowdir]
+    if os.path.exists(S.p("out", "run_items.txt")):
+        argv += ["--items", S.p("out", "run_items.txt")]
     S.run("recon", argv, ok="RECON OK")
     S.run("checks_R recon", [T("checks_R.py"), "text", S.p("out", "recon.txt")], ok="CHECKS R OK")
     n, calls = write_post_ops(a, S)
