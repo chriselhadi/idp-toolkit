@@ -25,6 +25,21 @@ body (no attachment ever again), compact recap, delta baseline = last SENT delta
 
 Then the IDP State parts (6 or so emails, `IDP-State` label only), then the run note.
 
+## The one-liner's shape (Chris, 14.11.2026)
+
+The AMS Register app lays each round card's one-liner out as WHO / NOW / BEFORE / IM, so the one-liner is written
+in four segments separated by " ; ", in this order, and `validate_synth.py` checks it:
+
+1. `<age><sex>, <background>, <background>` (sex `?` when unknown), e.g. `71M, DM2, CKD 3b, recurrent ESBL UTI`
+2. `prior adm <mm/yyyy>[ + <mm/yyyy>] <what for>`, only when there are earlier stays
+3. `adm <dd/mm> <how / where> w/ <presentation>` for this admission (`adm ?` when the date is unknown)
+4. `IM: <internal medicine picture>`, always last
+
+Example: `4F, severe cerebral palsy, G-button fed, recurrent aspiration pneumonia ; prior adm 01/2025 + 01/2026 ;
+adm 05/11 to PICU w/ 10 d nocturnal vomiting, fever 38.9 ; IM: NPO on IV fluids`.
+"IM:" not opening the last segment is an ERROR. The other "one_liner shape" lines are WARNINGS: fix every one
+before sending, the same morning. The recap text itself is unchanged.
+
 ## Verification policy
 
 Measured on 08.09.2026 and again 14.09.2026: prose and HTML transcription byte-exact at

@@ -32,6 +32,7 @@ dosecheck() {
 }
 
 # ---------------- Day 1: 2026-09-06, cold start ----------------
+python3 "$T/tests/test_one_liner.py" || exit 1
 python3 "$T/tests/make_fixture.py" "$D1" 2026-09-06
 cd "$D1"
 python3 "$I/parse_as.py" in/as.eml in/as_today.json | tee as_parse.txt
@@ -242,7 +243,7 @@ for t in glob.glob(os.path.join(sys.argv[1], "tables", "*(part 1 of*).csv")):
     assert open(t).readline() == open(t.replace("part 1 of", "part 2 of")).readline(), "a table part lost its header"
 print("CHECK export_split_rejoins OK (%d parts)" % len(parts))
 PY
-grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,5,1" "out/export/tables/abx_courses 2026-09-07.csv"
+grepcheck export_mero_course "2026-09-07,P0001,Mero,IV,q8h,Urosepsis,True,2026-09-03,False,,4,1" "out/export/tables/abx_courses 2026-09-07.csv"
 python3 - "$I" out/export <<'PY'
 import glob, json, os, re, sys
 sys.path.insert(0, sys.argv[1])

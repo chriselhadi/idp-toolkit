@@ -72,9 +72,9 @@ def days(segs, today):
                 return None
             if a > today:
                 a = iso_from_ddmm(m.group(1), y - 1)
-            total += (dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days + 1
+            total += (dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days  # today - start (started today = D0), as the app counts
         elif seg.strip().startswith("x1 "):
-            total += 1
+            total += 0  # a single dose adds no day
         else:
             return None
     return total

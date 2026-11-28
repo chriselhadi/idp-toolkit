@@ -69,7 +69,7 @@ def parse_abx(line, ref, issue=None):
         days = 0
         if s_date:
             end = e_date or ref
-            days = max(0, (end - s_date).days + 1)
+            days = max(0, (end - s_date).days)  # end minus start: started today = 0, one dose = 0
         rec["segments"].append({"start": iso(s_date), "start_approx": s_approx, "end": iso(e_date),
                                 "end_approx": e_approx, "open": is_open, "single": bool(single) or (not dash and not b),
                                 "days": days})
