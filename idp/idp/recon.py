@@ -14,11 +14,21 @@ Usage:
            [--reg-sheet in/reg_Register.json --feed-dir in/feed_now]   register (read this morning) vs the feed Gemini had (read before the run wrote it)
            [--evolution out/evolution.json]      idp10 evolve: counts of NEW / AMENDED / RETRACTED, unexplained (CHECKED)
            [--review in/feed_now/review.json]    Gemini Review tab: Escalated rows and rejected points (NEEDS YOU)
+           [--resolved <json>]   items Chris answered: a list of {key, until} or the 'Answered Items' tab get_values
+                                 (Key | Date answered | Item | Chris answer | Applied as | Until); listed keys are skipped
+                                 while until is empty or >= today, and counted under CHECKED
+           [--learned <file>]    the 'Learned Rules' tab get_values (No | Date | Rule | From | Status | Notes) or a text
+                                 file of "dd/mm/yyyy | rule text | from item key or RULE"; rules dated yesterday or today
+                                 (active only) go under RULES LEARNED FROM YOUR ANSWERS as L<No>
+
+Every NEEDS YOU line ends with a stable key, e.g. "3. ... [k3f9a21c0]": "k" + the first 8 hex of
+sha1(scope | kind | text without dates and times). The body ends with the HOW TO ANSWER footer; recon_reply.py
+reads Chris's reply to it the next morning.
 
 Every input is optional: a missing one is reported as "not checked". Writes the text body to --out and a JSON
 summary next to it. Exit 0 always; prints RECON OK with counts.
 """
-import argparse, datetime as dt, json, os, re
+import argparse, datetime as dt, hashlib, json, os, re, sys
 
 
 def load(p):
@@ -48,6 +58,105 @@ def sheet_rows(o):
     return o or []
 
 
+DATE_RE = re.compile(r"\b\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z?)?\b|\b\d{1,2}[/.]\d{1,2}(?:[/.]\d{2,4})?\b|\b\d{1,2}:\d{2}Z?\b")
+FOOTER = ("HOW TO ANSWER: reply to this email. Under any item, or anywhere, write its number and your answer, "
+          "e.g. \"10: 10 days, the GI plan wins\". Start a line with RULE: to teach a general rule, e.g. "
+          "\"RULE: BioFire Staph in 1 of several sets is a contaminant unless repeated\". Write \"undo\" after a "
+          "learned rule's number to drop it. The next morning run applies every answer and lists what it learned.")
+
+
+def item_key(scope, kind, text):
+    """Stable key of a NEEDS YOU item (28.11.2026): the same issue on another day keeps its key, so Chris's answer
+    sticks. Dates and times in the text are dropped before hashing; counts and names are kept."""
+    norm = re.sub(r"\s+", " ", DATE_RE.sub("", text)).strip().lower()
+    return "k" + hashlib.sha1(("%s|%s|%s" % ((scope or "").strip().lower(), kind, norm)).encode("utf-8")).hexdigest()[:8]
+
+
+def parse_day(v):
+    """ISO, dd/mm/yy or dd/mm/yyyy (leading apostrophe allowed) -> ISO date string, or "" when empty or unreadable."""
+    v = ("" if v is None else str(v)).strip().lstrip("'").strip()
+    if not v:
+        return ""
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", v)
+    if m:
+        return v
+    m = re.fullmatch(r"(\d{1,2})[/.](\d{1,2})[/.](\d{2}|\d{4})", v)
+    if not m:
+        return ""
+    y = int(m.group(3)); y += 2000 if y < 100 else 0
+    try:
+        return dt.date(y, int(m.group(2)), int(m.group(1))).isoformat()
+    except ValueError:
+        return ""
+
+
+def load_any(p):
+    """A JSON file (any extension) or None."""
+    if not p or not os.path.exists(p):
+        return None
+    t = open(p, encoding="utf-8", errors="ignore").read().strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        return None
+
+
+def tab_rows(o, first):
+    """Rows of a get_values result (dict with 'values', or a list of lists) without the header row whose first cell
+    is `first`; every cell as a stripped string without a leading apostrophe. None when `o` is not a tab."""
+    rows = o.get("values") if isinstance(o, dict) else o
+    if not isinstance(rows, list) or not all(isinstance(r, list) for r in rows):
+        return None
+    rows = [[("" if c is None else str(c)).strip().lstrip("'").strip() for c in r] for r in rows]
+    if rows and rows[0] and rows[0][0].lower() == first.lower():
+        rows = rows[1:]
+    return rows
+
+
+def load_resolved(p, today):
+    """Keys Chris already answered that still hold today. --resolved is a list of {key, until} or the 'Answered Items'
+    tab (Key | Date answered | Item | Chris answer | Applied as | Until)."""
+    o = load_any(p)
+    pairs = []
+    if isinstance(o, list) and all(isinstance(x, dict) for x in o):
+        pairs = [(x.get("key", ""), x.get("until", "")) for x in o]
+    else:
+        for r in tab_rows(o, "Key") or []:
+            r = r + [""] * 6
+            pairs.append((r[0], r[5]))
+    out = set()
+    for k, until in pairs:
+        k = (k or "").strip().strip("[]")
+        u = parse_day(until)
+        if k and (not (until or "").strip() or (u and u >= today)):
+            out.add(k)
+    return out
+
+
+def load_learned(p, today, yday):
+    """Rules added since the last email (dated yesterday or today). --learned is the 'Learned Rules' tab
+    (No | Date | Rule | From | Status | Notes; active rules only, L-number = No) or a text file of lines
+    "dd/mm/yyyy | rule text | from item key or RULE" (L-number = line order)."""
+    o = load_any(p)
+    rules = []
+    rows = tab_rows(o, "No") if o is not None else None
+    if rows is not None:
+        for r in rows:
+            r = r + [""] * 6
+            if not r[2] or r[4].lower() not in ("", "active"):
+                continue
+            rules.append({"n": "L" + r[0].upper().lstrip("L"), "date": parse_day(r[1]), "text": r[2], "from": r[3]})
+    elif p and os.path.exists(p):
+        i = 0
+        for ln in open(p, encoding="utf-8", errors="ignore").read().splitlines():
+            f = [x.strip() for x in ln.split("|")]
+            if len(f) < 2 or not f[1]:
+                continue
+            i += 1
+            rules.append({"n": "L%d" % i, "date": parse_day(f[0]), "text": f[1], "from": f[2] if len(f) > 2 else ""})
+    return [r for r in rules if r["date"] in (today, yday)]
+
+
 def roster_names(text):
     out = []
     for ln in (text or "").splitlines():
@@ -67,12 +176,24 @@ def roster_names(text):
 def main():
     ap = argparse.ArgumentParser()
     for k in ("date", "out", "svc", "roster_yday", "recaps", "state", "census", "coverage", "vqueue", "queue", "glog",
-              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir", "evolution", "review"):
+              "digest", "cultures", "missing", "fixed", "reg_sheet", "feed_dir", "evolution", "review", "resolved", "learned"):
         ap.add_argument("--" + k.replace("_", "-"), dest=k, required=k in ("date", "out"))
     a = ap.parse_args()
     today = a.date
     yday = (dt.date.fromisoformat(today) - dt.timedelta(days=1)).isoformat()
     need, ok, fixed, notchk = [], [], [], []
+    resolved = load_resolved(a.resolved, today) if a.resolved else set()
+    seen, skipped = set(), [0]
+
+    def add(kind, scope, text):
+        k = item_key(scope, kind, text)
+        while k in seen:  # two identical items on one day: the second gets its own key
+            k = item_key(scope, kind + "#", text + k)
+        seen.add(k)
+        if k in resolved:
+            skipped[0] += 1
+            return
+        need.append({"n": len(need) + 1, "key": k, "text": text})
 
     # 1. AMS app took yesterday's list and yesterday's recap
     svc, ry = load(a.svc), load(a.roster_yday)
@@ -82,7 +203,7 @@ def main():
         held = [q.get("name", "") for q in (svc.get("patients") or [])] + [q.get("name", "") for q in (svc.get("removed") or [])]
         miss = [n for n in roster_names(ry) if not any(same_person(n, h) for h in held)]
         if miss:
-            need.append("AMS app: %d patient(s) of yesterday's ID list missing from the app's list with no removal record: %s"
+            add("ams_missing", "AMS app", "AMS app: %d patient(s) of yesterday's ID list missing from the app's list with no removal record: %s"
                         % (len(miss), ", ".join(miss)))
         else:
             ok.append("AMS app holds every patient of yesterday's ID list (%d on its list, %d removed)"
@@ -93,7 +214,7 @@ def main():
             last = max([q.get("updated_at") or "" for q in (svc.get("patients") or [])] + [svc.get("last_edit_at") or ""])
             for t, subj in corr:
                 if last and last < t:
-                    need.append("AMS app: no change in the app after the corrected recap (%s, sent %s); it may still show the first version"
+                    add("ams_recap", "AMS app", "AMS app: no change in the app after the corrected recap (%s, sent %s); it may still show the first version"
                                 % (subj.strip(), t[11:16] + "Z"))
 
     # 2. Gemini applied yesterday's feed
@@ -101,7 +222,7 @@ def main():
     if cov:
         m = re.search(r"register: (\d+) admissions, (\d+) without a block", cov)
         if m and int(m.group(2)):
-            need.append("Gemini: " + cov.strip().splitlines()[-1])
+            add("coverage", "Gemini", "Gemini: " + cov.strip().splitlines()[-1])
         elif m:
             ok.append("Gemini: every feed admission has a register block (%s admissions)" % m.group(1))
     else:
@@ -124,7 +245,7 @@ def main():
             if s in ("held", "conflict"):
                 held_rows.append((r[0] if r else "").lstrip("'"))
         if held_rows:
-            need.append("Gemini queue: %d order(s) held or in conflict: %s" % (len(held_rows), ", ".join(held_rows[:12])
+            add("queue_held", "Gemini queue", "Gemini queue: %d order(s) held or in conflict: %s" % (len(held_rows), ", ".join(held_rows[:12])
                                                                           + (" ..." if len(held_rows) > 12 else "")))
         ok.append("Gemini queue: " + ", ".join("%s %d" % (k, v) for k, v in sorted(cnt.items())))
     else:
@@ -138,9 +259,9 @@ def main():
             tab = r[2] if len(r) > 2 else ""
             orders = r[1] if len(r) > 1 else ""
             if re.search(r"(^|,\s*)History(\s*,|$)", tab):
-                need.append("Gemini edited the old History backup tab (log %s, orders %s); it is read only" % (r[0].lstrip("'"), orders))
+                add("glog_backup", "Gemini log", "Gemini edited the old History backup tab (log %s, orders %s); it is read only" % (r[0].lstrip("'"), orders))
             elif "History" in tab and not re.search(r"\b13\.", orders):
-                need.append("Gemini edited frozen History outside the full-audit orders (log %s, orders %s, tab %s)"
+                add("glog_frozen", "Gemini log", "Gemini edited frozen History outside the full-audit orders (log %s, orders %s, tab %s)"
                             % (r[0].lstrip("'"), orders, tab))
         ok.append("Gemini log: %d entr(ies) since yesterday checked" % len(recent))
     else:
@@ -153,7 +274,7 @@ def main():
         rows = [l for l in part.splitlines()[1:] if l.startswith("row ")]
         for l in rows:
             m = re.match(r"row (\d+) (\S+) (\S+) (.*)", l)
-            need.append("Verification %s (row %s): %s" % (m.group(2), m.group(1), m.group(4)[:160]) if m else l[:180])
+            add("verification", "Verification", "Verification %s (row %s): %s" % (m.group(2), m.group(1), m.group(4)[:160]) if m else l[:180])
         if not rows:
             ok.append("Verification: nothing waiting for Chris")
 
@@ -168,12 +289,12 @@ def main():
             s0 = cx.find("### " + title)
             sec = cx[s0:cx.find("\n### ", s0 + 5)] if s0 >= 0 else ""
             if not sec:
-                need.append("Culture digest %s/%s has no matching Daily Cultures file (%s)" % (m.group(1), m.group(2), title))
+                add("digest_nofile", "Culture digest", "Culture digest %s/%s has no matching Daily Cultures file (%s)" % (m.group(1), m.group(2), title))
         if sec:
             years = {str(y) for y in range(2020, 2031)}
             lost = [b for b in benches if b not in sec and b not in years]
             if lost:
-                need.append("Culture digest %s/%s: %d bench number(s) not in the Daily Cultures file: %s"
+                add("digest_bench", "Culture digest", "Culture digest %s/%s: %d bench number(s) not in the Daily Cultures file: %s"
                             % (m.group(1), m.group(2), len(lost), ", ".join(lost[:15])))
             else:
                 ok.append("Culture digest %s/%s matches its Daily Cultures file (%d bench numbers)" % (m.group(1), m.group(2), len(benches)))
@@ -187,13 +308,13 @@ def main():
             sy = (stt.get("patients", {}).get(p["pid"]) or {}).get("synth") or {}
             nm = " ".join(w.capitalize() if w.isupper() else w for w in (p.get("name", "") or "").split())
             for c in sy.get("conflicts") or []:
-                need.append("%s: conflict: %s" % (nm, c))
+                add("conflict", nm, "%s: conflict: %s" % (nm, c))
             for d, why in (sy.get("not_applied") or {}).items():
-                need.append("%s: plan not applied: %s, %s" % (nm, d, why))
+                add("not_applied", nm, "%s: plan not applied: %s, %s" % (nm, d, why))
     mc = load(a.missing)
     for l in (mc or "").splitlines():
         if l.strip():
-            need.append("Possible missing culture: " + l.strip().lstrip("- "))
+            add("missing_culture", "Cultures", "Possible missing culture: " + l.strip().lstrip("- "))
     for l in (load(a.fixed) or "").splitlines():
         if l.strip():
             fixed.append(l.strip().lstrip("- "))
@@ -246,7 +367,7 @@ def main():
             if col[:5] not in txt:
                 gaps.append("%s culture %s %s" % (pid, col, r[2] if len(r) > 2 else ""))
         if gaps:
-            need.append("Register blocks missing %d item(s) the feed holds (course or final culture written over or never added): %s"
+            add("register_gap", "Register", "Register blocks missing %d item(s) the feed holds (course or final culture written over or never added): %s"
                         % (len(gaps), "; ".join(gaps[:20]) + (" ..." if len(gaps) > 20 else "")))
         else:
             ok.append("Register blocks of today's list hold every course and final culture in the feed")
@@ -272,25 +393,41 @@ def main():
             esc, rej = r[10].strip().upper() == "Y", r[7].strip().lower() == "rejected"
             if esc or rej:
                 nesc += esc; nrej += rej
-                need.append("Gemini review row %d (%s %s, %s, %s): %s%s%s" % (
+                add("review", "Gemini review", "Gemini review row %d (%s %s, %s, %s): %s%s%s" % (
                     n, r[1], r[2], r[3], r[4], r[5][:160], " ; Claude %s: %s" % (r[7], r[8][:160]) if r[7] else " ; no reply yet",
                     " [escalated]" if esc else ""))
         ok.append("Gemini review: %d point(s), %d escalated, %d rejected" % (npts, nesc, nrej))
     else:
         notchk.append("Gemini review")
+    if skipped[0]:
+        ok.append("%d item(s) already answered by Chris, not repeated" % skipped[0])
+    learned = load_learned(a.learned, today, yday) if a.learned else None
     d = dt.date.fromisoformat(today).strftime("%d.%m.%Y")
     lines = ["ID Reconciliation %s" % d, "", "NEEDS YOU (%d)" % len(need)]
-    lines += ["%d. %s" % (i + 1, x) for i, x in enumerate(need)] or ["none"]
+    lines += ["%d. %s [%s]" % (x["n"], x["text"], x["key"]) for x in need] or ["none"]
     lines += ["", "SETTLED BY THE RUN (%d)" % len(fixed)] + (["- " + x for x in fixed] or ["none"])
     lines += ["", "CHECKED, IN AGREEMENT"] + (["- " + x for x in ok] or ["none"])
     if notchk:
         lines += ["", "NOT CHECKED TODAY"] + ["- " + x for x in notchk]
-    body = "\n".join(lines).replace("—", ",").replace("–", ",") + "\n"
+    if learned is not None:
+        try:  # a rule Chris typed may carry a dose; the email never does
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from common import strip_doses
+        except Exception:
+            strip_doses = lambda t: t
+        for r in learned:
+            r["text"] = strip_doses(r["text"])
+        lines += ["", "RULES LEARNED FROM YOUR ANSWERS (%d)" % len(learned)]
+        lines += ["%s. %s (%s)" % (r["n"], r["text"], "general rule" if r["from"].upper() in ("", "RULE")
+                                  else "from item " + r["from"]) for r in learned] or ["none new since the last email"]
+    lines += ["", FOOTER]
+    body = "\n".join(lines).replace("\u2014", ",").replace("\u2013", ",") + "\n"
     open(a.out, "w", encoding="utf-8").write(body)
-    json.dump({"need": need, "fixed": fixed, "ok": ok, "not_checked": notchk},
+    json.dump({"date": today, "need": need, "fixed": fixed, "ok": ok, "not_checked": notchk,
+               "already_answered": skipped[0], "learned": learned or []},
               open(os.path.splitext(a.out)[0] + ".json", "w"), ensure_ascii=False, indent=1)
-    print("RECON OK: %d need Chris, %d settled, %d checks in agreement, %d not checked" % (len(need), len(fixed), len(ok), len(notchk)))
-
+    print("RECON OK: %d need Chris, %d settled, %d checks in agreement, %d not checked, %d already answered"
+          % (len(need), len(fixed), len(ok), len(notchk), skipped[0]))
 
 if __name__ == "__main__":
     main()
