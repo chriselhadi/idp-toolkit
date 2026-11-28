@@ -79,6 +79,15 @@ def main():
     d = jload(dp)
     t = jload(tp) if os.path.exists(tp) else {"patients": []}
     newset = set(json.load(open(np_))) if os.path.exists(np_) else set()
+    if d.get("as_missing"):
+        # Rule C (Chris, 28.11.2026): no AS list by 08:00 Beirut. One line; the missed delta follows with the next list.
+        line = d.get("reason") or "AS list not received by 08:00; delta follows when it arrives"
+        doc = ('<div style="padding:8px 4px;font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Helvetica,Arial,sans-serif">'
+               '<div style="font-size:18px;font-weight:700;color:%s">AS List Delta Report</div>'
+               '<div style="font-size:14px;color:%s;margin:8px 0 0 0">%s</div></div>' % (INK, INK, html.escape(line)))
+        open(hp, "w", encoding="utf-8").write(doc)
+        open(tp2, "w", encoding="utf-8").write("AS LIST DELTA REPORT\n%s\n" % line)
+        print("AS list missing: one-line Delta Report written"); return
     if not d.get("computed"):
         # No delta today (no AS list, or no earlier list in state). The report still goes out
         # and says why, so a missing list is visible rather than silent.

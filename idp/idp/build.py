@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Orchestrator: validate -> report -> render -> HTML handout -> state -> coverage -> recap + handout body.
+"""Orchestrator: validate -> report -> render -> delta -> state -> coverage -> recap (no HTML handout since 28.11.2026).
 
 Usage: build.py <workdir> "<DD Month YYYY>" --date YYYY-MM-DD [--as-today in/as_today.json] [--ams in/ams.json] [--max-b64 13000]
 Expects <workdir>/synth.py and <workdir>/out/ from match.py. Stops on the first validator error.
@@ -52,10 +52,8 @@ def main():
     run(os.path.join(HERE, "validate_synth.py"), synth, os.path.join(out, "census.json"), a.date, must="0 errors")
     run(os.path.join(HERE, "report.py"), out, synth, a.date, a.ams)
     run(os.path.join(HERE, "render.py"), synth, os.path.join(out, "census.json"), a.date, out)
-    # Handout = HTML email body (14.09.2026). The DOCX attachment path is retired: base64
-    # does not survive transcription past ~2000 chars, structured text does. build_html.py
-    # writes out/handout.html (htmlBody), out/handout.txt (plain alternative) and the manifest.
-    run(os.path.join(HERE, "build_html.py"), os.path.join(out, "render.json"), out, a.date_label)
+    # The HTML handout (build_html.py, out/handout.html) is no longer built (28.11.2026): since 23.10.2026 it was never
+    # emailed and nothing reads it. render.json stays (export.py reads it).
     # Email 1, the AS delta (Amendment C): built here from match.py's delta.json and
     # new_mrns.json, so the run never has to remember a separate render step.
     run(os.path.join(HERE, "render_delta.py"), os.path.join(out, "delta.json"), a.as_today,
@@ -78,9 +76,7 @@ def main():
         os.path.join(out, "state_matched.json"), a.date, out)
     body = open(os.path.join(out, "whatsapp.txt"), encoding="utf-8").read().rstrip() + "\n"
     open(os.path.join(out, "recap_email.txt"), "w", encoding="utf-8").write(body)
-    open(os.path.join(out, "handout_body.txt"), "w", encoding="utf-8").write(
-        "ID Daily Handout, %s. Open in an HTML-capable mail client to read the handout.\n" % a.date_label)
-    for f in ("recap_email.txt", "handout_body.txt"):
+    for f in ("recap_email.txt",):
         n = len(open(os.path.join(out, f), encoding="utf-8").read())
         print("%s: %d chars%s" % (f, n, "  (OVER 30000: split into thread replies)" if n > 30000 else ""))
     if "\u2014" in body or "\u2013" in body:

@@ -19,7 +19,8 @@ Usage:
                                  while until is empty or >= today, and counted under CHECKED
            [--learned <file>]    the 'Learned Rules' tab get_values (No | Date | Rule | From | Status | Notes) or a text
                                  file of "dd/mm/yyyy | rule text | from item key or RULE"; rules dated yesterday or today
-                                 (active only) go under RULES LEARNED FROM YOUR ANSWERS as L<No>
+                                 (active or proposed) go under RULES LEARNED FROM YOUR ANSWERS as L<No>; a proposed
+                                 rule (drawn from a plain answer, 28.11.2026) says "binds tomorrow unless you reply undo"
 
 Every NEEDS YOU line ends with a stable key, e.g. "3. ... [k3f9a21c0]": "k" + the first 8 hex of
 sha1(scope | kind | text without dates and times). The body ends with the HOW TO ANSWER footer; recon_reply.py
@@ -135,7 +136,7 @@ def load_resolved(p, today):
 
 def load_learned(p, today, yday):
     """Rules added since the last email (dated yesterday or today). --learned is the 'Learned Rules' tab
-    (No | Date | Rule | From | Status | Notes; active rules only, L-number = No) or a text file of lines
+    (No | Date | Rule | From | Status | Notes; active and proposed rules, L-number = No) or a text file of lines
     "dd/mm/yyyy | rule text | from item key or RULE" (L-number = line order)."""
     o = load_any(p)
     rules = []
@@ -143,9 +144,10 @@ def load_learned(p, today, yday):
     if rows is not None:
         for r in rows:
             r = r + [""] * 6
-            if not r[2] or r[4].lower() not in ("", "active"):
+            if not r[2] or r[4].lower() not in ("", "active", "proposed"):
                 continue
-            rules.append({"n": "L" + r[0].upper().lstrip("L"), "date": parse_day(r[1]), "text": r[2], "from": r[3]})
+            rules.append({"n": "L" + r[0].upper().lstrip("L"), "date": parse_day(r[1]), "text": r[2], "from": r[3],
+                          "status": r[4].lower() or "active"})
     elif p and os.path.exists(p):
         i = 0
         for ln in open(p, encoding="utf-8", errors="ignore").read().splitlines():
@@ -418,8 +420,10 @@ def main():
         for r in learned:
             r["text"] = strip_doses(r["text"])
         lines += ["", "RULES LEARNED FROM YOUR ANSWERS (%d)" % len(learned)]
-        lines += ["%s. %s (%s)" % (r["n"], r["text"], "general rule" if r["from"].upper() in ("", "RULE")
-                                  else "from item " + r["from"]) for r in learned] or ["none new since the last email"]
+        lines += ["%s. %s (%s%s)" % (r["n"], r["text"], "general rule" if r["from"].upper() in ("", "RULE")
+                                    else "from item " + r["from"],
+                                    "; proposed, binds tomorrow unless you reply undo" if r.get("status") == "proposed" else "")
+                  for r in learned] or ["none new since the last email"]
     lines += ["", FOOTER]
     body = "\n".join(lines).replace("\u2014", ",").replace("\u2013", ",") + "\n"
     open(a.out, "w", encoding="utf-8").write(body)
